@@ -1,0 +1,10 @@
+# Makevars for shard package (Unix/Linux/macOS)
+#
+# This file configures compilation for the shared memory backend.
+# On macOS, shm_open is in libc so no extra linking is needed.
+# On Linux, you may need to add -lrt to PKG_LIBS if you get linking errors.
+
+PKG_CFLAGS = $(C_VISIBILITY)
+# Needed on glibc Linux so CPU affinity APIs from <sched.h> are exposed.
+PKG_CPPFLAGS = -D_GNU_SOURCE
+PKG_LIBS = $(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS)

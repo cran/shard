@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+
+
+<title>Getting Started with shard</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">Getting Started with shard</h1>
+
+
+
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">library</span>(shard)</span></code></pre></div>
+<p>R’s parallel tools make it easy to fan out work, but they leave you
+to manage the hard parts yourself: duplicated memory, runaway workers,
+invisible copy-on-write. shard handles all of that so you can focus on
+the computation.</p>
+<p>The core idea is simple: <strong>share inputs once, write outputs to
+a buffer, let shard supervise the workers.</strong></p>
+<div id="a-first-example" class="section level2">
+<h2>A first example</h2>
+<p>Suppose you have a large matrix and want to compute column means in
+parallel. With shard, you share the matrix, allocate an output buffer,
+and map over column indices:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">42</span>)</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>X <span class="ot">&lt;-</span> <span class="fu">matrix</span>(<span class="fu">rnorm</span>(<span class="dv">5000</span>), <span class="at">nrow =</span> <span class="dv">100</span>, <span class="at">ncol =</span> <span class="dv">50</span>)</span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a><span class="co"># Share the matrix (zero-copy for workers)</span></span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a>X_shared <span class="ot">&lt;-</span> <span class="fu">share</span>(X)</span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a><span class="co"># Allocate an output buffer</span></span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a>out <span class="ot">&lt;-</span> <span class="fu">buffer</span>(<span class="st">&quot;double&quot;</span>, <span class="at">dim =</span> <span class="fu">ncol</span>(X))</span>
+<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" tabindex="-1"></a><span class="co"># Define column shards and run</span></span>
+<span id="cb2-11"><a href="#cb2-11" tabindex="-1"></a>blocks <span class="ot">&lt;-</span> <span class="fu">shards</span>(<span class="fu">ncol</span>(X), <span class="at">workers =</span> <span class="dv">2</span>)</span>
+<span id="cb2-12"><a href="#cb2-12" tabindex="-1"></a>run <span class="ot">&lt;-</span> <span class="fu">shard_map</span>(</span>
+<span id="cb2-13"><a href="#cb2-13" tabindex="-1"></a>  blocks,</span>
+<span id="cb2-14"><a href="#cb2-14" tabindex="-1"></a>  <span class="at">borrow =</span> <span class="fu">list</span>(<span class="at">X =</span> X_shared),</span>
+<span id="cb2-15"><a href="#cb2-15" tabindex="-1"></a>  <span class="at">out    =</span> <span class="fu">list</span>(<span class="at">out =</span> out),</span>
+<span id="cb2-16"><a href="#cb2-16" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">2</span>,</span>
+<span id="cb2-17"><a href="#cb2-17" tabindex="-1"></a>  <span class="at">fun =</span> <span class="cf">function</span>(shard, X, out) {</span>
+<span id="cb2-18"><a href="#cb2-18" tabindex="-1"></a>    <span class="cf">for</span> (j <span class="cf">in</span> shard<span class="sc">$</span>idx) {</span>
+<span id="cb2-19"><a href="#cb2-19" tabindex="-1"></a>      out[j] <span class="ot">&lt;-</span> <span class="fu">mean</span>(X[, j])</span>
+<span id="cb2-20"><a href="#cb2-20" tabindex="-1"></a>    }</span>
+<span id="cb2-21"><a href="#cb2-21" tabindex="-1"></a>  }</span>
+<span id="cb2-22"><a href="#cb2-22" tabindex="-1"></a>)</span>
+<span id="cb2-23"><a href="#cb2-23" tabindex="-1"></a></span>
+<span id="cb2-24"><a href="#cb2-24" tabindex="-1"></a><span class="co"># Read results from the buffer</span></span>
+<span id="cb2-25"><a href="#cb2-25" tabindex="-1"></a>result <span class="ot">&lt;-</span> out[]</span>
+<span id="cb2-26"><a href="#cb2-26" tabindex="-1"></a><span class="fu">head</span>(result)</span>
+<span id="cb2-27"><a href="#cb2-27" tabindex="-1"></a><span class="co">#&gt; [1]  0.03251482 -0.08748371 -0.01036817  0.03293646 -0.11783051  0.00236351</span></span></code></pre></div>
+<p>No serialization of the full matrix per worker. No list of return
+values to reassemble. The workers wrote directly into
+<code>out</code>.</p>
+</div>
+<div id="the-three-core-objects" class="section level2">
+<h2>The three core objects</h2>
+<p>shard’s workflow revolves around three things:</p>
+<table>
+<colgroup>
+<col width="26%" />
+<col width="43%" />
+<col width="30%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">Object</th>
+<th align="left">Constructor</th>
+<th align="left">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Shared input</td>
+<td align="left"><code>share()</code></td>
+<td align="left">Immutable, zero-copy data visible to all workers</td>
+</tr>
+<tr class="even">
+<td align="left">Output buffer</td>
+<td align="left"><code>buffer()</code></td>
+<td align="left">Writable shared memory that workers fill in</td>
+</tr>
+<tr class="odd">
+<td align="left">Shard descriptor</td>
+<td align="left"><code>shards()</code></td>
+<td align="left">Index ranges that partition the work</td>
+</tr>
+</tbody>
+</table>
+<div id="sharing-inputs" class="section level3">
+<h3>Sharing inputs</h3>
+<p><code>share()</code> places an R object into shared memory. Workers
+attach to the same segment instead of receiving a copy:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>X_shared <span class="ot">&lt;-</span> <span class="fu">share</span>(X)</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a><span class="fu">is_shared</span>(X_shared)</span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="co">#&gt; [1] TRUE</span></span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="fu">shared_info</span>(X_shared)</span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co">#&gt; $path</span></span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/var/folders/9h/nkjq6vss7mqdl4ck7q1hd8ph0000gp/T//shard_17438_1774905326_1774905329&quot;</span></span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt; $backing</span></span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a><span class="co">#&gt; [1] &quot;mmap&quot;</span></span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="co">#&gt; $size</span></span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a><span class="co">#&gt; [1] 40000</span></span>
+<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-14"><a href="#cb3-14" tabindex="-1"></a><span class="co">#&gt; $readonly</span></span>
+<span id="cb3-15"><a href="#cb3-15" tabindex="-1"></a><span class="co">#&gt; [1] TRUE</span></span>
+<span id="cb3-16"><a href="#cb3-16" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-17"><a href="#cb3-17" tabindex="-1"></a><span class="co">#&gt; $class_info</span></span>
+<span id="cb3-18"><a href="#cb3-18" tabindex="-1"></a><span class="co">#&gt; $class_info$type</span></span>
+<span id="cb3-19"><a href="#cb3-19" tabindex="-1"></a><span class="co">#&gt; [1] &quot;matrix&quot;</span></span>
+<span id="cb3-20"><a href="#cb3-20" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-21"><a href="#cb3-21" tabindex="-1"></a><span class="co">#&gt; $class_info$dim</span></span>
+<span id="cb3-22"><a href="#cb3-22" tabindex="-1"></a><span class="co">#&gt; [1] 100  50</span></span>
+<span id="cb3-23"><a href="#cb3-23" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-24"><a href="#cb3-24" tabindex="-1"></a><span class="co">#&gt; $class_info$mode</span></span>
+<span id="cb3-25"><a href="#cb3-25" tabindex="-1"></a><span class="co">#&gt; [1] &quot;double&quot;</span></span>
+<span id="cb3-26"><a href="#cb3-26" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-27"><a href="#cb3-27" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-28"><a href="#cb3-28" tabindex="-1"></a><span class="co">#&gt; $segment_info</span></span>
+<span id="cb3-29"><a href="#cb3-29" tabindex="-1"></a><span class="co">#&gt; $segment_info$size</span></span>
+<span id="cb3-30"><a href="#cb3-30" tabindex="-1"></a><span class="co">#&gt; [1] 40000</span></span>
+<span id="cb3-31"><a href="#cb3-31" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-32"><a href="#cb3-32" tabindex="-1"></a><span class="co">#&gt; $segment_info$backing</span></span>
+<span id="cb3-33"><a href="#cb3-33" tabindex="-1"></a><span class="co">#&gt; [1] &quot;mmap&quot;</span></span>
+<span id="cb3-34"><a href="#cb3-34" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-35"><a href="#cb3-35" tabindex="-1"></a><span class="co">#&gt; $segment_info$path</span></span>
+<span id="cb3-36"><a href="#cb3-36" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/var/folders/9h/nkjq6vss7mqdl4ck7q1hd8ph0000gp/T//shard_17438_1774905326_1774905329&quot;</span></span>
+<span id="cb3-37"><a href="#cb3-37" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-38"><a href="#cb3-38" tabindex="-1"></a><span class="co">#&gt; $segment_info$readonly</span></span>
+<span id="cb3-39"><a href="#cb3-39" tabindex="-1"></a><span class="co">#&gt; [1] TRUE</span></span>
+<span id="cb3-40"><a href="#cb3-40" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-41"><a href="#cb3-41" tabindex="-1"></a><span class="co">#&gt; $segment_info$owns</span></span>
+<span id="cb3-42"><a href="#cb3-42" tabindex="-1"></a><span class="co">#&gt; [1] TRUE</span></span></code></pre></div>
+<p>Shared objects are <strong>read-only</strong>. Any attempt to modify
+them in a worker raises an error, which prevents silent copy-on-write
+bugs.</p>
+</div>
+<div id="output-buffers" class="section level3">
+<h3>Output buffers</h3>
+<p><code>buffer()</code> creates typed shared memory that workers write
+to using standard R indexing:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>buf <span class="ot">&lt;-</span> <span class="fu">buffer</span>(<span class="st">&quot;double&quot;</span>, <span class="at">dim =</span> <span class="fu">c</span>(<span class="dv">10</span>, <span class="dv">5</span>))</span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>buf[<span class="dv">1</span><span class="sc">:</span><span class="dv">5</span>, <span class="dv">1</span>] <span class="ot">&lt;-</span> <span class="fu">rnorm</span>(<span class="dv">5</span>)</span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>buf[<span class="dv">6</span><span class="sc">:</span><span class="dv">10</span>, <span class="dv">1</span>] <span class="ot">&lt;-</span> <span class="fu">rnorm</span>(<span class="dv">5</span>)</span>
+<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a>buf[, <span class="dv">1</span>]</span>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a><span class="co">#&gt;  [1]  0.07122244  0.97029003  0.31003525 -0.13954856 -0.32631113 -0.11880951</span></span>
+<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt;  [7]  0.89355889  0.21111451 -0.48877979 -0.22037193</span></span></code></pre></div>
+<p>Buffers support <code>&quot;double&quot;</code>, <code>&quot;integer&quot;</code>,
+<code>&quot;logical&quot;</code>, and <code>&quot;raw&quot;</code> types. For matrices and
+arrays, pass a <code>dim</code> vector:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>int_buf <span class="ot">&lt;-</span> <span class="fu">buffer</span>(<span class="st">&quot;integer&quot;</span>, <span class="at">dim =</span> <span class="dv">100</span>)</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>mat_buf <span class="ot">&lt;-</span> <span class="fu">buffer</span>(<span class="st">&quot;double&quot;</span>, <span class="at">dim =</span> <span class="fu">c</span>(<span class="dv">50</span>, <span class="dv">20</span>))</span></code></pre></div>
+</div>
+<div id="shard-descriptors" class="section level3">
+<h3>Shard descriptors</h3>
+<p><code>shards()</code> partitions a range of indices into chunks for
+parallel execution. It auto-tunes the block size based on the number of
+workers:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>blocks <span class="ot">&lt;-</span> <span class="fu">shards</span>(<span class="dv">1000</span>, <span class="at">workers =</span> <span class="dv">4</span>)</span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a>blocks</span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a><span class="co">#&gt; shard descriptor</span></span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a><span class="co">#&gt;   Items: 1,000 </span></span>
+<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a><span class="co">#&gt;   Block size: 63 </span></span>
+<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a><span class="co">#&gt;   Strategy: contiguous </span></span>
+<span id="cb6-7"><a href="#cb6-7" tabindex="-1"></a><span class="co">#&gt;   Shards: 16 </span></span>
+<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a><span class="co">#&gt;   Shard sizes: 55 - 63</span></span></code></pre></div>
+<p>Each shard carries an <code>idx</code> field with its assigned
+indices:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a>blocks[[<span class="dv">1</span>]]<span class="sc">$</span>idx[<span class="dv">1</span><span class="sc">:</span><span class="dv">10</span>]  <span class="co"># first 10 indices of shard 1</span></span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a><span class="co">#&gt;  [1]  1  2  3  4  5  6  7  8  9 10</span></span></code></pre></div>
+</div>
+</div>
+<div id="running-shard_map" class="section level2">
+<h2>Running shard_map()</h2>
+<p><code>shard_map()</code> is the engine. It dispatches shards to a
+supervised worker pool, passes shared inputs, and collects
+diagnostics:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">1</span>)</span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>X <span class="ot">&lt;-</span> <span class="fu">matrix</span>(<span class="fu">rnorm</span>(<span class="dv">2000</span>), <span class="at">nrow =</span> <span class="dv">100</span>, <span class="at">ncol =</span> <span class="dv">20</span>)</span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>X_shared <span class="ot">&lt;-</span> <span class="fu">share</span>(X)</span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>col_sds <span class="ot">&lt;-</span> <span class="fu">buffer</span>(<span class="st">&quot;double&quot;</span>, <span class="at">dim =</span> <span class="fu">ncol</span>(X))</span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a></span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>blocks <span class="ot">&lt;-</span> <span class="fu">shards</span>(<span class="fu">ncol</span>(X), <span class="at">workers =</span> <span class="dv">2</span>)</span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a>run <span class="ot">&lt;-</span> <span class="fu">shard_map</span>(</span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a>  blocks,</span>
+<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a>  <span class="at">borrow  =</span> <span class="fu">list</span>(<span class="at">X =</span> X_shared),</span>
+<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a>  <span class="at">out     =</span> <span class="fu">list</span>(<span class="at">col_sds =</span> col_sds),</span>
+<span id="cb8-11"><a href="#cb8-11" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">2</span>,</span>
+<span id="cb8-12"><a href="#cb8-12" tabindex="-1"></a>  <span class="at">fun =</span> <span class="cf">function</span>(shard, X, col_sds) {</span>
+<span id="cb8-13"><a href="#cb8-13" tabindex="-1"></a>    <span class="cf">for</span> (j <span class="cf">in</span> shard<span class="sc">$</span>idx) {</span>
+<span id="cb8-14"><a href="#cb8-14" tabindex="-1"></a>      col_sds[j] <span class="ot">&lt;-</span> <span class="fu">sd</span>(X[, j])</span>
+<span id="cb8-15"><a href="#cb8-15" tabindex="-1"></a>    }</span>
+<span id="cb8-16"><a href="#cb8-16" tabindex="-1"></a>  }</span>
+<span id="cb8-17"><a href="#cb8-17" tabindex="-1"></a>)</span>
+<span id="cb8-18"><a href="#cb8-18" tabindex="-1"></a></span>
+<span id="cb8-19"><a href="#cb8-19" tabindex="-1"></a><span class="co"># Results are already in the buffer</span></span>
+<span id="cb8-20"><a href="#cb8-20" tabindex="-1"></a>sd_values <span class="ot">&lt;-</span> col_sds[]</span>
+<span id="cb8-21"><a href="#cb8-21" tabindex="-1"></a></span>
+<span id="cb8-22"><a href="#cb8-22" tabindex="-1"></a><span class="co"># Verify against base R</span></span>
+<span id="cb8-23"><a href="#cb8-23" tabindex="-1"></a><span class="fu">all.equal</span>(sd_values, <span class="fu">apply</span>(X, <span class="dv">2</span>, sd))</span>
+<span id="cb8-24"><a href="#cb8-24" tabindex="-1"></a><span class="co">#&gt; [1] TRUE</span></span></code></pre></div>
+<div id="what-if-workers-return-values" class="section level3">
+<h3>What if workers return values?</h3>
+<p>If your function returns a value (instead of writing to a buffer),
+shard gathers the results:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a>blocks <span class="ot">&lt;-</span> <span class="fu">shards</span>(<span class="dv">10</span>, <span class="at">workers =</span> <span class="dv">2</span>)</span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a>run <span class="ot">&lt;-</span> <span class="fu">shard_map</span>(</span>
+<span id="cb9-3"><a href="#cb9-3" tabindex="-1"></a>  blocks,</span>
+<span id="cb9-4"><a href="#cb9-4" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">2</span>,</span>
+<span id="cb9-5"><a href="#cb9-5" tabindex="-1"></a>  <span class="at">fun =</span> <span class="cf">function</span>(shard) {</span>
+<span id="cb9-6"><a href="#cb9-6" tabindex="-1"></a>    <span class="fu">sum</span>(shard<span class="sc">$</span>idx)</span>
+<span id="cb9-7"><a href="#cb9-7" tabindex="-1"></a>  }</span>
+<span id="cb9-8"><a href="#cb9-8" tabindex="-1"></a>)</span>
+<span id="cb9-9"><a href="#cb9-9" tabindex="-1"></a><span class="fu">results</span>(run)</span>
+<span id="cb9-10"><a href="#cb9-10" tabindex="-1"></a><span class="co">#&gt; $`1`</span></span>
+<span id="cb9-11"><a href="#cb9-11" tabindex="-1"></a><span class="co">#&gt; [1] 3</span></span>
+<span id="cb9-12"><a href="#cb9-12" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb9-13"><a href="#cb9-13" tabindex="-1"></a><span class="co">#&gt; $`2`</span></span>
+<span id="cb9-14"><a href="#cb9-14" tabindex="-1"></a><span class="co">#&gt; [1] 7</span></span>
+<span id="cb9-15"><a href="#cb9-15" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb9-16"><a href="#cb9-16" tabindex="-1"></a><span class="co">#&gt; $`3`</span></span>
+<span id="cb9-17"><a href="#cb9-17" tabindex="-1"></a><span class="co">#&gt; [1] 11</span></span>
+<span id="cb9-18"><a href="#cb9-18" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb9-19"><a href="#cb9-19" tabindex="-1"></a><span class="co">#&gt; $`4`</span></span>
+<span id="cb9-20"><a href="#cb9-20" tabindex="-1"></a><span class="co">#&gt; [1] 15</span></span>
+<span id="cb9-21"><a href="#cb9-21" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb9-22"><a href="#cb9-22" tabindex="-1"></a><span class="co">#&gt; $`5`</span></span>
+<span id="cb9-23"><a href="#cb9-23" tabindex="-1"></a><span class="co">#&gt; [1] 19</span></span></code></pre></div>
+<p>Buffers are preferred for large outputs because they avoid
+serializing results back to the main process. Use return values for
+small summaries.</p>
+</div>
+</div>
+<div id="convenience-wrappers" class="section level2">
+<h2>Convenience wrappers</h2>
+<p>For common patterns, shard provides wrappers that handle sharing,
+sharding, and buffering automatically.</p>
+<div id="column-wise-apply" class="section level3">
+<h3>Column-wise apply</h3>
+<p><code>shard_apply_matrix()</code> applies a scalar function over each
+column of a matrix:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">1</span>)</span>
+<span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a>X <span class="ot">&lt;-</span> <span class="fu">matrix</span>(<span class="fu">rnorm</span>(<span class="dv">2000</span>), <span class="at">nrow =</span> <span class="dv">100</span>, <span class="at">ncol =</span> <span class="dv">20</span>)</span>
+<span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a>y <span class="ot">&lt;-</span> <span class="fu">rnorm</span>(<span class="dv">100</span>)</span>
+<span id="cb10-4"><a href="#cb10-4" tabindex="-1"></a></span>
+<span id="cb10-5"><a href="#cb10-5" tabindex="-1"></a><span class="co"># Correlate each column of X with y</span></span>
+<span id="cb10-6"><a href="#cb10-6" tabindex="-1"></a>cors <span class="ot">&lt;-</span> <span class="fu">shard_apply_matrix</span>(</span>
+<span id="cb10-7"><a href="#cb10-7" tabindex="-1"></a>  X,</span>
+<span id="cb10-8"><a href="#cb10-8" tabindex="-1"></a>  <span class="at">MARGIN =</span> <span class="dv">2</span>,</span>
+<span id="cb10-9"><a href="#cb10-9" tabindex="-1"></a>  <span class="at">FUN =</span> <span class="cf">function</span>(v, y) <span class="fu">cor</span>(v, y),</span>
+<span id="cb10-10"><a href="#cb10-10" tabindex="-1"></a>  <span class="at">VARS =</span> <span class="fu">list</span>(<span class="at">y =</span> y),</span>
+<span id="cb10-11"><a href="#cb10-11" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">2</span></span>
+<span id="cb10-12"><a href="#cb10-12" tabindex="-1"></a>)</span>
+<span id="cb10-13"><a href="#cb10-13" tabindex="-1"></a><span class="fu">head</span>(cors)</span>
+<span id="cb10-14"><a href="#cb10-14" tabindex="-1"></a><span class="co">#&gt; [1]  0.09122115  0.14024598  0.14152571  0.07212827  0.01476771 -0.02163338</span></span></code></pre></div>
+<p>The matrix is auto-shared, columns are dispatched as shards, and
+results are collected into a vector.</p>
+</div>
+<div id="list-lapply" class="section level3">
+<h3>List lapply</h3>
+<p><code>shard_lapply_shared()</code> is a parallel <code>lapply</code>
+with automatic sharing of large list elements:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a>chunks <span class="ot">&lt;-</span> <span class="fu">lapply</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">10</span>, <span class="cf">function</span>(i) <span class="fu">rnorm</span>(<span class="dv">100</span>))</span>
+<span id="cb11-2"><a href="#cb11-2" tabindex="-1"></a></span>
+<span id="cb11-3"><a href="#cb11-3" tabindex="-1"></a>means <span class="ot">&lt;-</span> <span class="fu">shard_lapply_shared</span>(</span>
+<span id="cb11-4"><a href="#cb11-4" tabindex="-1"></a>  chunks,</span>
+<span id="cb11-5"><a href="#cb11-5" tabindex="-1"></a>  <span class="at">FUN =</span> mean,</span>
+<span id="cb11-6"><a href="#cb11-6" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">2</span></span>
+<span id="cb11-7"><a href="#cb11-7" tabindex="-1"></a>)</span>
+<span id="cb11-8"><a href="#cb11-8" tabindex="-1"></a><span class="fu">unlist</span>(means)</span>
+<span id="cb11-9"><a href="#cb11-9" tabindex="-1"></a><span class="co">#&gt;  [1]  0.05500125 -0.03817609  0.11888573  0.05156112 -0.17846699  0.07432353</span></span>
+<span id="cb11-10"><a href="#cb11-10" tabindex="-1"></a><span class="co">#&gt;  [7]  0.07494846  0.06421283  0.07259335  0.14194300</span></span></code></pre></div>
+</div>
+</div>
+<div id="diagnostics" class="section level2">
+<h2>Diagnostics</h2>
+<p>Every <code>shard_map()</code> call records timing, memory, and
+worker statistics. Use <code>report()</code> to inspect them:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" tabindex="-1"></a><span class="fu">report</span>(<span class="at">result =</span> run)</span>
+<span id="cb12-2"><a href="#cb12-2" tabindex="-1"></a><span class="co">#&gt; shard_report (summary)</span></span>
+<span id="cb12-3"><a href="#cb12-3" tabindex="-1"></a><span class="co">#&gt; Generated: 2026-03-30 17:15:27 </span></span>
+<span id="cb12-4"><a href="#cb12-4" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb12-5"><a href="#cb12-5" tabindex="-1"></a><span class="co">#&gt; Pool:</span></span>
+<span id="cb12-6"><a href="#cb12-6" tabindex="-1"></a><span class="co">#&gt;   Workers: 2 </span></span>
+<span id="cb12-7"><a href="#cb12-7" tabindex="-1"></a><span class="co">#&gt;   RSS limit: 2.0 GB </span></span>
+<span id="cb12-8"><a href="#cb12-8" tabindex="-1"></a><span class="co">#&gt;   Drift threshold: 50% </span></span>
+<span id="cb12-9"><a href="#cb12-9" tabindex="-1"></a><span class="co">#&gt;   Stats: 32 tasks, 0 recycles, 0 deaths</span></span>
+<span id="cb12-10"><a href="#cb12-10" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb12-11"><a href="#cb12-11" tabindex="-1"></a><span class="co">#&gt; Memory:</span></span>
+<span id="cb12-12"><a href="#cb12-12" tabindex="-1"></a><span class="co">#&gt;   Total RSS: 171.7 MB </span></span>
+<span id="cb12-13"><a href="#cb12-13" tabindex="-1"></a><span class="co">#&gt;   Peak RSS: 86.6 MB </span></span>
+<span id="cb12-14"><a href="#cb12-14" tabindex="-1"></a><span class="co">#&gt;   Mean RSS: 85.9 MB </span></span>
+<span id="cb12-15"><a href="#cb12-15" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb12-16"><a href="#cb12-16" tabindex="-1"></a><span class="co">#&gt; Recommendations:</span></span>
+<span id="cb12-17"><a href="#cb12-17" tabindex="-1"></a><span class="co">#&gt;   - Per-shard work looks tiny (2.502 ms/shard). Consider increasing chunk_size, or use profile=&#39;speed&#39; / dispatch_mode=&#39;shm_queue&#39; for out-buffer workflows to reduce dispatch overhead.</span></span></code></pre></div>
+<p>For focused views:</p>
+<ul>
+<li><code>mem_report(run)</code> – peak and baseline RSS per worker</li>
+<li><code>copy_report(run)</code> – bytes transferred through
+buffers</li>
+<li><code>task_report(run)</code> – per-chunk execution times and retry
+counts</li>
+</ul>
+</div>
+<div id="worker-pool-management" class="section level2">
+<h2>Worker pool management</h2>
+<p>By default, <code>shard_map()</code> creates a worker pool on first
+use and reuses it. You can also manage the pool explicitly:</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" tabindex="-1"></a><span class="co"># Create a pool with 4 workers and a 1GB memory cap</span></span>
+<span id="cb13-2"><a href="#cb13-2" tabindex="-1"></a><span class="fu">pool_create</span>(<span class="at">n =</span> <span class="dv">4</span>, <span class="at">rss_limit =</span> <span class="st">&quot;1GB&quot;</span>)</span>
+<span id="cb13-3"><a href="#cb13-3" tabindex="-1"></a></span>
+<span id="cb13-4"><a href="#cb13-4" tabindex="-1"></a><span class="co"># Check pool health</span></span>
+<span id="cb13-5"><a href="#cb13-5" tabindex="-1"></a><span class="fu">pool_status</span>()</span>
+<span id="cb13-6"><a href="#cb13-6" tabindex="-1"></a></span>
+<span id="cb13-7"><a href="#cb13-7" tabindex="-1"></a><span class="co"># Run multiple shard_map() calls (reuses the same pool)</span></span>
+<span id="cb13-8"><a href="#cb13-8" tabindex="-1"></a>run1 <span class="ot">&lt;-</span> <span class="fu">shard_map</span>(<span class="fu">shards</span>(<span class="dv">1000</span>), <span class="at">workers =</span> <span class="dv">4</span>, <span class="at">fun =</span> <span class="cf">function</span>(s) <span class="fu">sum</span>(s<span class="sc">$</span>idx))</span>
+<span id="cb13-9"><a href="#cb13-9" tabindex="-1"></a>run2 <span class="ot">&lt;-</span> <span class="fu">shard_map</span>(<span class="fu">shards</span>(<span class="dv">500</span>),  <span class="at">workers =</span> <span class="dv">4</span>, <span class="at">fun =</span> <span class="cf">function</span>(s) <span class="fu">mean</span>(s<span class="sc">$</span>idx))</span>
+<span id="cb13-10"><a href="#cb13-10" tabindex="-1"></a></span>
+<span id="cb13-11"><a href="#cb13-11" tabindex="-1"></a><span class="co"># Shut down workers when done</span></span>
+<span id="cb13-12"><a href="#cb13-12" tabindex="-1"></a><span class="fu">pool_stop</span>()</span></code></pre></div>
+<p>Workers are supervised: if a worker’s memory usage drifts beyond the
+threshold, shard recycles it automatically.</p>
+</div>
+<div id="copy-on-write-protection" class="section level2">
+<h2>Copy-on-write protection</h2>
+<p>Shared inputs are immutable by default (<code>cow = &quot;deny&quot;</code>).
+This prevents a common class of parallel bugs where a worker
+accidentally modifies shared data, triggering a silent copy:</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" tabindex="-1"></a><span class="fu">shard_map</span>(</span>
+<span id="cb14-2"><a href="#cb14-2" tabindex="-1"></a>  <span class="fu">shards</span>(<span class="dv">10</span>),</span>
+<span id="cb14-3"><a href="#cb14-3" tabindex="-1"></a>  <span class="at">borrow =</span> <span class="fu">list</span>(<span class="at">X =</span> <span class="fu">share</span>(<span class="fu">matrix</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">100</span>, <span class="dv">10</span>, <span class="dv">10</span>))),</span>
+<span id="cb14-4"><a href="#cb14-4" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">2</span>,</span>
+<span id="cb14-5"><a href="#cb14-5" tabindex="-1"></a>  <span class="at">cow =</span> <span class="st">&quot;deny&quot;</span>,</span>
+<span id="cb14-6"><a href="#cb14-6" tabindex="-1"></a>  <span class="at">fun =</span> <span class="cf">function</span>(shard, X) {</span>
+<span id="cb14-7"><a href="#cb14-7" tabindex="-1"></a>    X[<span class="dv">1</span>, <span class="dv">1</span>] <span class="ot">&lt;-</span> <span class="dv">999</span>  <span class="co"># Error: mutation denied</span></span>
+<span id="cb14-8"><a href="#cb14-8" tabindex="-1"></a>  }</span>
+<span id="cb14-9"><a href="#cb14-9" tabindex="-1"></a>)</span></code></pre></div>
+<p>You can relax this with <code>cow = &quot;audit&quot;</code> (detect and report
+mutations) or <code>cow = &quot;allow&quot;</code> (permit copy-on-write with
+tracking). See <code>?shard_map</code> for details.</p>
+</div>
+<div id="clean-up" class="section level2">
+<h2>Clean up</h2>
+<p>When you are done, stop the pool to release worker processes:</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" tabindex="-1"></a><span class="fu">pool_stop</span>()</span></code></pre></div>
+</div>
+<div id="next-steps" class="section level2">
+<h2>Next steps</h2>
+<ul>
+<li><code>?shard_map</code> – full reference for the parallel
+engine</li>
+<li><code>?share</code> – sharing options and backing types</li>
+<li><code>?buffer</code> – buffer types and matrix/array support</li>
+<li><code>?report</code> – diagnostic reports and recommendations</li>
+<li><code>?shard_apply_matrix</code> – column-wise parallel apply</li>
+<li><code>?pool_create</code> – pool configuration and memory
+limits</li>
+</ul>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>
