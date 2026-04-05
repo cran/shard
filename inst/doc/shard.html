@@ -427,7 +427,7 @@ attach to the same segment instead of receiving a copy:</p>
 <span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="co">#&gt; [1] TRUE</span></span>
 <span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="fu">shared_info</span>(X_shared)</span>
 <span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co">#&gt; $path</span></span>
-<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/var/folders/9h/nkjq6vss7mqdl4ck7q1hd8ph0000gp/T//shard_17438_1774905326_1774905329&quot;</span></span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/var/folders/9h/nkjq6vss7mqdl4ck7q1hd8ph0000gp/T//shard_25871_1775397751_1775397754&quot;</span></span>
 <span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt; $backing</span></span>
 <span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a><span class="co">#&gt; [1] &quot;mmap&quot;</span></span>
@@ -457,7 +457,7 @@ attach to the same segment instead of receiving a copy:</p>
 <span id="cb3-33"><a href="#cb3-33" tabindex="-1"></a><span class="co">#&gt; [1] &quot;mmap&quot;</span></span>
 <span id="cb3-34"><a href="#cb3-34" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb3-35"><a href="#cb3-35" tabindex="-1"></a><span class="co">#&gt; $segment_info$path</span></span>
-<span id="cb3-36"><a href="#cb3-36" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/var/folders/9h/nkjq6vss7mqdl4ck7q1hd8ph0000gp/T//shard_17438_1774905326_1774905329&quot;</span></span>
+<span id="cb3-36"><a href="#cb3-36" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/var/folders/9h/nkjq6vss7mqdl4ck7q1hd8ph0000gp/T//shard_25871_1775397751_1775397754&quot;</span></span>
 <span id="cb3-37"><a href="#cb3-37" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb3-38"><a href="#cb3-38" tabindex="-1"></a><span class="co">#&gt; $segment_info$readonly</span></span>
 <span id="cb3-39"><a href="#cb3-39" tabindex="-1"></a><span class="co">#&gt; [1] TRUE</span></span>
@@ -611,7 +611,7 @@ with automatic sharing of large list elements:</p>
 worker statistics. Use <code>report()</code> to inspect them:</p>
 <div class="sourceCode" id="cb12"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" tabindex="-1"></a><span class="fu">report</span>(<span class="at">result =</span> run)</span>
 <span id="cb12-2"><a href="#cb12-2" tabindex="-1"></a><span class="co">#&gt; shard_report (summary)</span></span>
-<span id="cb12-3"><a href="#cb12-3" tabindex="-1"></a><span class="co">#&gt; Generated: 2026-03-30 17:15:27 </span></span>
+<span id="cb12-3"><a href="#cb12-3" tabindex="-1"></a><span class="co">#&gt; Generated: 2026-04-05 10:02:32 </span></span>
 <span id="cb12-4"><a href="#cb12-4" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb12-5"><a href="#cb12-5" tabindex="-1"></a><span class="co">#&gt; Pool:</span></span>
 <span id="cb12-6"><a href="#cb12-6" tabindex="-1"></a><span class="co">#&gt;   Workers: 2 </span></span>
@@ -620,12 +620,12 @@ worker statistics. Use <code>report()</code> to inspect them:</p>
 <span id="cb12-9"><a href="#cb12-9" tabindex="-1"></a><span class="co">#&gt;   Stats: 32 tasks, 0 recycles, 0 deaths</span></span>
 <span id="cb12-10"><a href="#cb12-10" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb12-11"><a href="#cb12-11" tabindex="-1"></a><span class="co">#&gt; Memory:</span></span>
-<span id="cb12-12"><a href="#cb12-12" tabindex="-1"></a><span class="co">#&gt;   Total RSS: 171.7 MB </span></span>
-<span id="cb12-13"><a href="#cb12-13" tabindex="-1"></a><span class="co">#&gt;   Peak RSS: 86.6 MB </span></span>
-<span id="cb12-14"><a href="#cb12-14" tabindex="-1"></a><span class="co">#&gt;   Mean RSS: 85.9 MB </span></span>
+<span id="cb12-12"><a href="#cb12-12" tabindex="-1"></a><span class="co">#&gt;   Total RSS: 171.2 MB </span></span>
+<span id="cb12-13"><a href="#cb12-13" tabindex="-1"></a><span class="co">#&gt;   Peak RSS: 86.8 MB </span></span>
+<span id="cb12-14"><a href="#cb12-14" tabindex="-1"></a><span class="co">#&gt;   Mean RSS: 85.6 MB </span></span>
 <span id="cb12-15"><a href="#cb12-15" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb12-16"><a href="#cb12-16" tabindex="-1"></a><span class="co">#&gt; Recommendations:</span></span>
-<span id="cb12-17"><a href="#cb12-17" tabindex="-1"></a><span class="co">#&gt;   - Per-shard work looks tiny (2.502 ms/shard). Consider increasing chunk_size, or use profile=&#39;speed&#39; / dispatch_mode=&#39;shm_queue&#39; for out-buffer workflows to reduce dispatch overhead.</span></span></code></pre></div>
+<span id="cb12-17"><a href="#cb12-17" tabindex="-1"></a><span class="co">#&gt;   - Per-shard work looks tiny (2.669 ms/shard). Consider increasing chunk_size, or use profile=&#39;speed&#39; / dispatch_mode=&#39;shm_queue&#39; for out-buffer workflows to reduce dispatch overhead.</span></span></code></pre></div>
 <p>For focused views:</p>
 <ul>
 <li><code>mem_report(run)</code> – peak and baseline RSS per worker</li>

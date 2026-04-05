@@ -1,7 +1,7 @@
 Package: shard
 Type: Package
 Title: Deterministic, Zero-Copy Parallel Execution for R
-Version: 0.1.0
+Version: 0.1.1
 Authors@R: 
     person("Bradley", "Buchsbaum", email = "brad.buchsbaum@gmail.com", role = c("aut", "cre", "cph"))
 Description: Provides a parallel execution runtime for R that emphasizes
@@ -26,8 +26,8 @@ URL: https://bbuchsbaum.github.io/shard/,
 BugReports: https://github.com/bbuchsbaum/shard/issues
 SystemRequirements: POSIX shared memory (optional), memory-mapped files
 Config/testthat/edition: 3
-Packaged: 2026-03-30 21:15:29 UTC; bbuchsbaum
+Packaged: 2026-04-05 14:02:34 UTC; bbuchsbaum
 Author: Bradley Buchsbaum [aut, cre, cph]
 Maintainer: Bradley Buchsbaum <brad.buchsbaum@gmail.com>
 Repository: CRAN
-Date/Publication: 2026-04-03 08:40:02 UTC
+Date/Publication: 2026-04-05 20:40:02 UTC
