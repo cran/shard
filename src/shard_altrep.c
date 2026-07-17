@@ -29,10 +29,28 @@
 #include <R_ext/BLAS.h>
 #include <R_ext/RS.h>
 
-/* Info struct stored in ALTREP data1 */
+/* Info struct stored in ALTREP data1.
+ *
+ * Ownership graph (Phase 3.6) -- GC-native, no R_PreserveObject:
+ *
+ *   ALTREP vector
+ *     `- data1: info external pointer (this struct in its addr slot)
+ *          |- TAG  = segment_ptr  (external pointer to shard_segment_t)
+ *          `- PROT = parent       (parent ALTREP for views, or R_NilValue)
+ *
+ * The GC traces the TAG/PROT slots of the info xptr, so as long as any
+ * view is reachable, its segment xptr and its whole parent chain are
+ * reachable too -- each view also tags the segment xptr DIRECTLY, so the
+ * mapping can never be finalized while any view is alive, regardless of
+ * finalizer ordering. `segment_ptr`/`parent` below are raw aliases of the
+ * TAG/PROT slots (set once at creation, never reassigned); they are valid
+ * exactly because the xptr keeps those SEXPs alive. info_finalizer() only
+ * frees this malloc'd struct: it must NOT touch segment_ptr/parent, since
+ * R runs finalizers in arbitrary order at GC/shutdown.
+ */
 typedef struct shard_altrep_info {
-    SEXP segment_ptr;        /* External pointer to segment (protected) */
-    SEXP parent;             /* Parent ALTREP for views (or R_NilValue) */
+    SEXP segment_ptr;        /* == TAG of the info xptr (kept alive by GC) */
+    SEXP parent;             /* == PROT of the info xptr (or R_NilValue) */
     size_t offset;           /* Byte offset into segment */
     R_xlen_t length;         /* Number of elements */
     size_t element_size;     /* Size of each element in bytes */
@@ -40,10 +58,34 @@ typedef struct shard_altrep_info {
     int deny_write;          /* Error on write attempts when readonly (cow='deny') */
     int sexp_type;           /* R type (INTSXP, REALSXP, etc.) */
 
+    /* Phase 3.7: cached resolved base pointer for this vector's data.
+     * Valid iff cached_ptr != NULL and cached_gen == shard_data2_gen.
+     * See get_data_ptr() for the invalidation argument. */
+    const void *cached_ptr;
+    uint64_t cached_gen;
+
     /* Diagnostic counters */
     R_xlen_t dataptr_calls;      /* Times a data pointer was requested */
     R_xlen_t materialize_calls;  /* Times vector was materialized */
+    R_xlen_t coerce_calls;       /* Times a type coercion was requested */
 } shard_altrep_info_t;
+
+/*
+ * Phase 3.7: global generation counter for resolved-pointer caches.
+ *
+ * The resolved base pointer of a shard ALTREP vector can change for exactly
+ * one reason: a COW materialization stores a private copy in some vector's
+ * data2 slot (altvec_dataptr, writable path), which can redirect reads for
+ * that vector AND for all views below it in the parent chain. The segment
+ * mapping itself never moves: mmap addresses are fixed for the lifetime of
+ * a shard_segment_t, the attach registry shares (never remaps) mappings,
+ * and munmap only happens when the last handle dies -- impossible while any
+ * view is alive, per the ownership graph above. So bumping this counter at
+ * the single R_set_altrep_data2() site is a complete invalidation protocol.
+ * Starts at 1 so a zeroed cached_gen is never valid. Single-threaded (R
+ * main thread) by construction.
+ */
+static uint64_t shard_data2_gen = 1;
 
 /* ALTREP class objects - one per supported type */
 static R_altrep_class_t shard_int_class;
@@ -51,8 +93,22 @@ static R_altrep_class_t shard_real_class;
 static R_altrep_class_t shard_lgl_class;
 static R_altrep_class_t shard_raw_class;
 
-/* Helper: Get info struct from ALTREP object */
+/* Helper: Get info struct from ALTREP object.
+ *
+ * Only treat x as one of shard's own ALTREP classes after verifying class
+ * identity. A foreign ALTREP (arrow, lazy vectors, deferred-string, ...) can
+ * also store an EXTPTRSXP in data1; blindly casting its payload to
+ * shard_altrep_info_t* would be a garbage dereference (A3). The class objects
+ * are installed in shard_altrep_init() at package load, so they are always
+ * valid by the time any method or entry point can call this. */
 static shard_altrep_info_t *get_info(SEXP x) {
+    if (!ALTREP(x)) return NULL;
+    if (!R_altrep_inherits(x, shard_int_class) &&
+        !R_altrep_inherits(x, shard_real_class) &&
+        !R_altrep_inherits(x, shard_lgl_class) &&
+        !R_altrep_inherits(x, shard_raw_class)) {
+        return NULL;
+    }
     SEXP data1 = R_altrep_data1(x);
     if (TYPEOF(data1) != EXTPTRSXP) return NULL;
     return (shard_altrep_info_t *)R_ExternalPtrAddr(data1);
@@ -79,11 +135,11 @@ static void *vec_data_ptr(SEXP v, int type) {
     }
 }
 
-/* Helper: Get data pointer for the vector.
+/* Helper (slow path): resolve the data pointer for the vector.
  * If the vector has been materialized (data2 is a non-ALTREP vector), returns that.
  * Note: Views store the parent ALTREP in data2 for reference counting, so we
  * must check if data2 is ALTREP (parent ref) vs regular vector (materialized). */
-static void *get_data_ptr(SEXP x, shard_altrep_info_t *info) {
+static void *resolve_data_ptr(SEXP x, shard_altrep_info_t *info) {
     /* Check if we have a materialized copy in data2 */
     SEXP data2 = R_altrep_data2(x);
     if (data2 != R_NilValue && !ALTREP(data2)) {
@@ -126,15 +182,33 @@ static void *get_data_ptr(SEXP x, shard_altrep_info_t *info) {
     return (char *)base + info->offset;
 }
 
-/* Finalizer for info struct */
+/* Helper: Get data pointer for the vector, with a generation-guarded cache
+ * (Phase 3.7). The cached pointer may target the shared mapping, this
+ * vector's own materialized data2, or an ancestor's materialized data2; all
+ * three stay valid while the vector is alive (segment pinned via the info
+ * xptr TAG chain; data2 vectors pinned by their owners, which the PROT
+ * chain keeps alive). Any event that can change the resolution bumps
+ * shard_data2_gen, so a stale pointer is never returned. */
+static void *get_data_ptr(SEXP x, shard_altrep_info_t *info) {
+    if (info->cached_ptr && info->cached_gen == shard_data2_gen) {
+        return (void *)info->cached_ptr;
+    }
+
+    void *resolved = resolve_data_ptr(x, info);
+    if (resolved) {
+        info->cached_ptr = resolved;
+        info->cached_gen = shard_data2_gen;
+    }
+    return resolved;
+}
+
+/* Finalizer for info struct (Phase 3.6): only frees the malloc'd struct.
+ * segment_ptr/parent are owned by the info xptr's TAG/PROT slots and are
+ * released naturally by the GC; touching them here would be unsafe because
+ * finalizers run in arbitrary order. */
 static void info_finalizer(SEXP ptr) {
     shard_altrep_info_t *info = (shard_altrep_info_t *)R_ExternalPtrAddr(ptr);
     if (info) {
-        /* Release protection of segment_ptr */
-        R_ReleaseObject(info->segment_ptr);
-        if (info->parent != R_NilValue) {
-            R_ReleaseObject(info->parent);
-        }
         free(info);
         R_ClearExternalPtr(ptr);
     }
@@ -160,6 +234,17 @@ static size_t element_size_for_type(int type) {
         case RAWSXP: return sizeof(Rbyte);
         default: return 0;
     }
+}
+
+/* Validate an R-supplied offset/length (arriving as a double) before casting.
+ * Non-finite, negative, or out-of-range values would wrap to a huge
+ * size_t/R_xlen_t and defeat the downstream bounds checks (A4). `what` names
+ * the argument for the error message. Returns the validated double. */
+static double checked_nonneg(double d, double maxv, const char *what) {
+    if (!R_FINITE(d) || d < 0 || d > maxv) {
+        error("%s must be a finite, non-negative value within range", what);
+    }
+    return d;
 }
 
 /*
@@ -218,18 +303,21 @@ static SEXP altrep_duplicate(SEXP x, Rboolean deep) {
     memcpy(new_info, info, sizeof(shard_altrep_info_t));
     new_info->dataptr_calls = 0;
     new_info->materialize_calls = 0;
+    new_info->coerce_calls = 0;
     new_info->parent = x;
+    new_info->cached_ptr = NULL;   /* fresh object resolves lazily (3.7) */
+    new_info->cached_gen = 0;
 
-    /* Protect segment reference */
-    R_PreserveObject(new_info->segment_ptr);
-    R_PreserveObject(new_info->parent);
-
-    SEXP info_ptr = PROTECT(R_MakeExternalPtr(new_info, R_NilValue, R_NilValue));
+    /* Ownership (3.6): TAG = segment xptr, PROT = parent; the GC traces
+     * both, so no R_PreserveObject bookkeeping is needed. */
+    SEXP info_ptr = PROTECT(R_MakeExternalPtr(new_info, new_info->segment_ptr,
+                                              new_info->parent));
     R_RegisterCFinalizerEx(info_ptr, info_finalizer, TRUE);
 
-    /* Create new ALTREP object */
+    /* Create new ALTREP object. PROTECT before the allocating setAttrib/
+     * install/getAttrib calls below, which can trigger GC (A1). */
     R_altrep_class_t cls = get_class_for_type(info->sexp_type);
-    SEXP result = R_new_altrep(cls, info_ptr, R_NilValue);
+    SEXP result = PROTECT(R_new_altrep(cls, info_ptr, R_NilValue));
 
     /* Preserve user-visible attributes needed for policy enforcement */
     setAttrib(result, R_ClassSymbol, getAttrib(x, R_ClassSymbol));
@@ -240,14 +328,17 @@ static SEXP altrep_duplicate(SEXP x, Rboolean deep) {
         setAttrib(result, sym_ro, getAttrib(x, sym_ro));
     }
 
-    UNPROTECT(1);
+    UNPROTECT(2); /* info_ptr, result */
     return result;
 }
 
-/* Coerce method - materialize when coercing */
+/* Coerce method - track coercions without claiming a materialization.
+ * The default coercion allocates a NEW vector of the target type; it does
+ * not materialize this vector's shared data into data2, so bumping
+ * materialize_calls here would misreport COW activity. */
 static SEXP altrep_coerce(SEXP x, int type) {
     shard_altrep_info_t *info = get_info(x);
-    if (info) info->materialize_calls++;
+    if (info) info->coerce_calls++;
     return NULL; /* Use default coercion */
 }
 
@@ -327,8 +418,10 @@ static SEXP altrep_unserialize(SEXP cls, SEXP state) {
     const char *path = CHAR(STRING_ELT(path_sexp, 0));
 
     int backing = INTEGER(VECTOR_ELT(state, 1))[0];
-    size_t off = (size_t)REAL(VECTOR_ELT(state, 2))[0];
-    R_xlen_t len = (R_xlen_t)REAL(VECTOR_ELT(state, 3))[0];
+    size_t off = (size_t)checked_nonneg(REAL(VECTOR_ELT(state, 2))[0],
+                                        (double)SIZE_MAX, "offset");
+    R_xlen_t len = (R_xlen_t)checked_nonneg(REAL(VECTOR_ELT(state, 3))[0],
+                                            (double)R_XLEN_T_MAX, "length");
     int ro = LOGICAL(VECTOR_ELT(state, 4))[0];
     int deny_write = 0;
     const char *cow_str = NULL;
@@ -349,14 +442,18 @@ static SEXP altrep_unserialize(SEXP cls, SEXP state) {
         error("Unsupported SEXP type in serialized state: %d", sexp_type);
     }
 
-    shard_segment_t *seg = shard_segment_open(path, (shard_backing_t)backing, ro);
+    /* Phase 3.4: attach via the per-process registry so that many tasks
+     * touching the same shared object reuse one mapping instead of paying
+     * an open+fstat+mmap round trip per unserialize. */
+    shard_segment_t *seg = shard_segment_attach(path, (shard_backing_t)backing, ro);
     if (!seg) {
         error("Failed to open shared memory segment for ALTREP unserialize");
     }
 
-    /* Validate bounds against segment size */
+    /* Validate bounds against segment size (overflow-safe: never form the
+     * possibly-wrapping product off + len * elem_size). */
     size_t seg_size = shard_segment_size(seg);
-    if (off + (size_t)len * elem_size > seg_size) {
+    if (off > seg_size || (size_t)len > (seg_size - off) / elem_size) {
         shard_segment_close(seg, 0);
         error("Serialized ALTREP range exceeds segment size");
     }
@@ -377,17 +474,20 @@ static SEXP altrep_unserialize(SEXP cls, SEXP state) {
     info->readonly = ro;
     info->deny_write = deny_write;
     info->sexp_type = sexp_type;
+    info->cached_ptr = NULL;
+    info->cached_gen = 0;
     info->dataptr_calls = 0;
     info->materialize_calls = 0;
+    info->coerce_calls = 0;
 
-    R_PreserveObject(seg_xptr);
-
-    SEXP info_ptr = PROTECT(R_MakeExternalPtr(info, R_NilValue, R_NilValue));
+    /* Ownership (3.6): TAG = segment xptr; the GC traces it. */
+    SEXP info_ptr = PROTECT(R_MakeExternalPtr(info, seg_xptr, R_NilValue));
     R_RegisterCFinalizerEx(info_ptr, info_finalizer, TRUE);
 
-    /* Rebuild as the correct shard ALTREP class for this stored type */
+    /* Rebuild as the correct shard ALTREP class for this stored type.
+     * PROTECT before the allocating setAttrib/mkString/install calls (A1). */
     R_altrep_class_t acls = get_class_for_type(sexp_type);
-    SEXP result = R_new_altrep(acls, info_ptr, R_NilValue);
+    SEXP result = PROTECT(R_new_altrep(acls, info_ptr, R_NilValue));
 
     /* Restore user-visible attributes for policy enforcement */
     setAttrib(result, R_ClassSymbol, mkString("shard_shared_vector"));
@@ -402,7 +502,7 @@ static SEXP altrep_unserialize(SEXP cls, SEXP state) {
         setAttrib(result, sym_ro, ScalarLogical(ro));
     }
 
-    UNPROTECT(2);
+    UNPROTECT(3); /* seg_xptr, info_ptr, result */
     return result;
 }
 
@@ -414,6 +514,26 @@ static SEXP altrep_unserialize(SEXP cls, SEXP state) {
 static void *altvec_dataptr(SEXP x, Rboolean writable) {
     shard_altrep_info_t *info = get_info(x);
     if (!info) return NULL;
+
+    /*
+     * cow='deny' (info->deny_write): writes must never reach the shared
+     * bytes. We would like to Rf_error() on any writable request here, but
+     * base R requests writable DATAPTR from many purely read-only paths
+     * (verified empirically on R 4.x: identical(), range(), relops like
+     * `==`, which.max() all call Dataptr with writable=TRUE), so a hard
+     * error would make deny vectors unusable for ordinary reads -- including
+     * worker-side borrows, which unserialize with deny_write=1.
+     *
+     * Enforcement therefore has three cooperating layers:
+     *   1. The segment itself is mprotect(PROT_READ) / VirtualProtect
+     *      PAGE_READONLY, so the shared bytes physically cannot change.
+     *   2. R-level replacement methods ([<-, names<-, dim<-, ...) error
+     *      with cow='deny' for classed access.
+     *   3. Here, a writable request is served from a PRIVATE materialized
+     *      copy in data2 (never the shared mapping), so even a bypassed
+     *      write (e.g. after unclass()) can only touch a transient copy,
+     *      never the shared segment.
+     */
 
     /*
      * Enforce readonly via copy-on-write: when writable access is requested
@@ -448,8 +568,14 @@ static void *altvec_dataptr(SEXP x, Rboolean writable) {
             memcpy(dst, src, n * info->element_size);
         }
 
-        /* Store in data2 for future access */
+        /* Store in data2 for future access. This is the ONLY site that can
+         * change how get_data_ptr() resolves (for this vector and for views
+         * below it), so bump the global generation to invalidate all cached
+         * resolved pointers (3.7). Cache our own new resolution directly. */
         R_set_altrep_data2(x, materialized);
+        shard_data2_gen++;
+        info->cached_ptr = dst;
+        info->cached_gen = shard_data2_gen;
         UNPROTECT(1);
 
         info->dataptr_calls++;
@@ -549,18 +675,21 @@ static SEXP altvec_extract_subset(SEXP x, SEXP indx, SEXP call) {
         new_info->readonly = info->readonly;
         new_info->deny_write = info->deny_write;
         new_info->sexp_type = info->sexp_type;
+        new_info->cached_ptr = NULL;
+        new_info->cached_gen = 0;
         new_info->dataptr_calls = 0;
         new_info->materialize_calls = 0;
+        new_info->coerce_calls = 0;
 
-        /* Protect segment reference */
-        R_PreserveObject(new_info->segment_ptr);
-        R_PreserveObject(new_info->parent);
-
-        SEXP info_ptr = PROTECT(R_MakeExternalPtr(new_info, R_NilValue, R_NilValue));
+        /* Ownership (3.6): TAG = segment xptr, PROT = parent ALTREP. */
+        SEXP info_ptr = PROTECT(R_MakeExternalPtr(new_info, new_info->segment_ptr,
+                                                  new_info->parent));
         R_RegisterCFinalizerEx(info_ptr, info_finalizer, TRUE);
 
+        /* PROTECT the fresh ALTREP before the allocating setAttrib/install/
+         * getAttrib calls below, which can trigger GC (A1). */
         R_altrep_class_t cls = get_class_for_type(info->sexp_type);
-        SEXP result = R_new_altrep(cls, info_ptr, R_NilValue);
+        SEXP result = PROTECT(R_new_altrep(cls, info_ptr, R_NilValue));
 
         /* Preserve user-visible attributes needed for policy enforcement */
         setAttrib(result, R_ClassSymbol, getAttrib(x, R_ClassSymbol));
@@ -571,7 +700,7 @@ static SEXP altvec_extract_subset(SEXP x, SEXP indx, SEXP call) {
             setAttrib(result, sym_ro, getAttrib(x, sym_ro));
         }
 
-        UNPROTECT(1);
+        UNPROTECT(2); /* info_ptr, result */
         return result;
     }
 
@@ -784,8 +913,9 @@ SEXP C_shard_altrep_create(SEXP seg, SEXP type, SEXP offset, SEXP length, SEXP r
         error("Unsupported SEXP type: %d", sexp_type);
     }
 
-    size_t off = (size_t)REAL(offset)[0];
-    R_xlen_t len = (R_xlen_t)REAL(length)[0];
+    size_t off = (size_t)checked_nonneg(REAL(offset)[0], (double)SIZE_MAX, "offset");
+    R_xlen_t len = (R_xlen_t)checked_nonneg(REAL(length)[0],
+                                            (double)R_XLEN_T_MAX, "length");
     int ro = LOGICAL(readonly)[0];
     int deny_write = 0;
 
@@ -807,9 +937,10 @@ SEXP C_shard_altrep_create(SEXP seg, SEXP type, SEXP offset, SEXP length, SEXP r
         deny_write = 0;
     }
 
-    /* Validate bounds */
+    /* Validate bounds (overflow-safe: never form the possibly-wrapping
+     * product off + len * elem_size). */
     size_t seg_size = shard_segment_size(segment);
-    if (off + len * elem_size > seg_size) {
+    if (off > seg_size || (size_t)len > (seg_size - off) / elem_size) {
         error("Requested range exceeds segment size (offset=%zu, length=%lld, elem_size=%zu, seg_size=%zu)",
               off, (long long)len, elem_size, seg_size);
     }
@@ -828,19 +959,21 @@ SEXP C_shard_altrep_create(SEXP seg, SEXP type, SEXP offset, SEXP length, SEXP r
     info->readonly = ro;
     info->deny_write = deny_write;
     info->sexp_type = sexp_type;
+    info->cached_ptr = NULL;
+    info->cached_gen = 0;
     info->dataptr_calls = 0;
     info->materialize_calls = 0;
+    info->coerce_calls = 0;
 
-    /* Protect segment from GC */
-    R_PreserveObject(seg);
-
-    /* Create external pointer for info */
-    SEXP info_ptr = PROTECT(R_MakeExternalPtr(info, R_NilValue, R_NilValue));
+    /* Ownership (3.6): TAG = segment xptr keeps the segment alive for as
+     * long as this vector is reachable; the GC traces the edge natively. */
+    SEXP info_ptr = PROTECT(R_MakeExternalPtr(info, seg, R_NilValue));
     R_RegisterCFinalizerEx(info_ptr, info_finalizer, TRUE);
 
-    /* Create ALTREP object */
+    /* Create ALTREP object. PROTECT before the allocating setAttrib/mkString/
+     * install calls below, which can trigger GC (A1). */
     R_altrep_class_t cls = get_class_for_type(sexp_type);
-    SEXP result = R_new_altrep(cls, info_ptr, R_NilValue);
+    SEXP result = PROTECT(R_new_altrep(cls, info_ptr, R_NilValue));
 
     /*
      * Mark as a shard shared object and record policy. We use a lightweight
@@ -859,7 +992,7 @@ SEXP C_shard_altrep_create(SEXP seg, SEXP type, SEXP offset, SEXP length, SEXP r
         setAttrib(result, sym_ro, ScalarLogical(ro));
     }
 
-    UNPROTECT(1);
+    UNPROTECT(2); /* info_ptr, result */
     return result;
 }
 
@@ -874,14 +1007,20 @@ SEXP C_shard_altrep_view(SEXP x, SEXP start, SEXP length) {
         error("Invalid shard ALTREP vector");
     }
 
-    R_xlen_t st = (R_xlen_t)REAL(start)[0];
-    R_xlen_t len = (R_xlen_t)REAL(length)[0];
+    double st_d = REAL(start)[0];
+    double len_d = REAL(length)[0];
+    if (!R_FINITE(st_d) || !R_FINITE(len_d)) {
+        error("start and length must be finite");
+    }
+    R_xlen_t st = (R_xlen_t)st_d;
+    R_xlen_t len = (R_xlen_t)len_d;
 
-    /* Validate range */
+    /* Validate range: reject negative start/length and any extent that would
+     * overflow past the end of the parent vector (A4). */
     if (st < 0 || st >= info->length) {
         error("start index out of bounds");
     }
-    if (st + len > info->length) {
+    if (len < 0 || len > info->length - st) {
         error("view extends beyond vector bounds");
     }
 
@@ -899,19 +1038,21 @@ SEXP C_shard_altrep_view(SEXP x, SEXP start, SEXP length) {
     new_info->readonly = info->readonly;
     new_info->deny_write = info->deny_write;
     new_info->sexp_type = info->sexp_type;
+    new_info->cached_ptr = NULL;
+    new_info->cached_gen = 0;
     new_info->dataptr_calls = 0;
     new_info->materialize_calls = 0;
+    new_info->coerce_calls = 0;
 
-    /* Protect segment reference */
-    R_PreserveObject(new_info->segment_ptr);
-    R_PreserveObject(new_info->parent);
-
-    SEXP info_ptr = PROTECT(R_MakeExternalPtr(new_info, R_NilValue, R_NilValue));
+    /* Ownership (3.6): TAG = segment xptr, PROT = parent ALTREP. */
+    SEXP info_ptr = PROTECT(R_MakeExternalPtr(new_info, new_info->segment_ptr,
+                                              new_info->parent));
     R_RegisterCFinalizerEx(info_ptr, info_finalizer, TRUE);
 
     R_altrep_class_t cls = get_class_for_type(info->sexp_type);
-    /* data2 is reserved for a private, materialized COW copy on write. */
-    SEXP result = R_new_altrep(cls, info_ptr, R_NilValue);
+    /* data2 is reserved for a private, materialized COW copy on write.
+     * PROTECT before the allocating setAttrib/install/getAttrib calls (A1). */
+    SEXP result = PROTECT(R_new_altrep(cls, info_ptr, R_NilValue));
 
     /* Preserve user-visible attributes needed for policy enforcement */
     setAttrib(result, R_ClassSymbol, getAttrib(x, R_ClassSymbol));
@@ -922,7 +1063,7 @@ SEXP C_shard_altrep_view(SEXP x, SEXP start, SEXP length) {
         setAttrib(result, sym_ro, getAttrib(x, sym_ro));
     }
 
-    UNPROTECT(1);
+    UNPROTECT(2); /* info_ptr, result */
     return result;
 }
 
@@ -937,22 +1078,24 @@ SEXP C_shard_altrep_diagnostics(SEXP x) {
         error("Invalid shard ALTREP vector");
     }
 
-    SEXP result = PROTECT(allocVector(VECSXP, 6));
-    SEXP names = PROTECT(allocVector(STRSXP, 6));
+    SEXP result = PROTECT(allocVector(VECSXP, 7));
+    SEXP names = PROTECT(allocVector(STRSXP, 7));
 
     SET_STRING_ELT(names, 0, mkChar("dataptr_calls"));
     SET_STRING_ELT(names, 1, mkChar("materialize_calls"));
-    SET_STRING_ELT(names, 2, mkChar("length"));
-    SET_STRING_ELT(names, 3, mkChar("offset"));
-    SET_STRING_ELT(names, 4, mkChar("readonly"));
-    SET_STRING_ELT(names, 5, mkChar("type"));
+    SET_STRING_ELT(names, 2, mkChar("coerce_calls"));
+    SET_STRING_ELT(names, 3, mkChar("length"));
+    SET_STRING_ELT(names, 4, mkChar("offset"));
+    SET_STRING_ELT(names, 5, mkChar("readonly"));
+    SET_STRING_ELT(names, 6, mkChar("type"));
 
     SET_VECTOR_ELT(result, 0, ScalarReal((double)info->dataptr_calls));
     SET_VECTOR_ELT(result, 1, ScalarReal((double)info->materialize_calls));
-    SET_VECTOR_ELT(result, 2, ScalarReal((double)info->length));
-    SET_VECTOR_ELT(result, 3, ScalarReal((double)info->offset));
-    SET_VECTOR_ELT(result, 4, ScalarLogical(info->readonly));
-    SET_VECTOR_ELT(result, 5, ScalarString(mkChar(type2char(info->sexp_type))));
+    SET_VECTOR_ELT(result, 2, ScalarReal((double)info->coerce_calls));
+    SET_VECTOR_ELT(result, 3, ScalarReal((double)info->length));
+    SET_VECTOR_ELT(result, 4, ScalarReal((double)info->offset));
+    SET_VECTOR_ELT(result, 5, ScalarLogical(info->readonly));
+    SET_VECTOR_ELT(result, 6, ScalarString(mkChar(type2char(info->sexp_type))));
 
     setAttrib(result, R_NamesSymbol, names);
     UNPROTECT(2);
@@ -995,6 +1138,7 @@ SEXP C_shard_altrep_reset_diagnostics(SEXP x) {
 
     info->dataptr_calls = 0;
     info->materialize_calls = 0;
+    info->coerce_calls = 0;
 
     return R_NilValue;
 }
@@ -1160,8 +1304,9 @@ SEXP C_shard_mat_block_col_vars(SEXP x, SEXP row_start, SEXP row_end,
         int col_idx = c0 + j;
         R_xlen_t base = (R_xlen_t)col_idx * (R_xlen_t)nrow;
 
-        double sum = 0.0;
-        double sumsq = 0.0;
+        double mean = 0.0;
+        double m2 = 0.0;
+        int count = 0;
         int any_na = 0;
         for (int i = r0; i <= r1; i++) {
             double v = data[base + (R_xlen_t)i];
@@ -1169,16 +1314,20 @@ SEXP C_shard_mat_block_col_vars(SEXP x, SEXP row_start, SEXP row_end,
                 any_na = 1;
                 break;
             }
-            sum += v;
-            sumsq += v * v;
+            count++;
+            double delta = v - mean;
+            mean += delta / (double)count;
+            double delta2 = v - mean;
+            m2 += delta * delta2;
         }
 
         if (any_na) {
             outp[j] = NA_REAL;
-        } else if (nobs <= 1) {
+        } else if (count <= 1 || nobs <= 1) {
             outp[j] = NA_REAL;
         } else {
-            double var = (sumsq - (sum * sum) / (double)nobs) / (double)(nobs - 1);
+            double var = m2 / (double)(count - 1);
+            if (var < 0.0 && var > -1e-12) var = 0.0;
             outp[j] = var;
         }
     }

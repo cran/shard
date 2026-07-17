@@ -53,11 +53,17 @@ segment_create <- function(size,
     ptr <- .Call("C_shard_segment_create", size, backing_int, path, readonly,
                  PACKAGE = "shard")
 
+    # Record the RESOLVED backing ("mmap" or "shm"), not the requested one:
+    # "auto" resolves platform-dependently in C (POSIX shm on Linux, mmap
+    # elsewhere), and descriptors built from $backing must be reopenable
+    # with segment_open(), which requires a concrete backing.
+    info <- .Call("C_shard_segment_info", ptr, PACKAGE = "shard")
+
     structure(
         list(
             ptr = ptr,
             size = size,
-            backing = backing,
+            backing = info$backing,
             readonly = readonly
         ),
         class = "shard_segment"
@@ -282,4 +288,11 @@ is_windows <- function() {
 #' available_backings()
 available_backings <- function() {
     .Call("C_shard_available_backings", PACKAGE = "shard")
+}
+
+# Internal: per-process attach registry diagnostics (Phase 3.4).
+# Returns cumulative attach/map/hit counters and current registry contents.
+# Used by tests and benchmarks; not part of the public API.
+shard_shm_registry_stats_ <- function() {
+    .Call("C_shard_shm_registry_stats", PACKAGE = "shard")
 }

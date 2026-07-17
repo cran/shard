@@ -19,7 +19,11 @@ NULL
 #'   Can be bytes (numeric) or human-readable (e.g., "2GB"). Default is "2GB".
 #' @param rss_drift_threshold Numeric. Fraction of RSS increase from baseline
 #'   that triggers recycling (default 0.5 = 50% growth).
-#' @param heartbeat_interval Numeric. Seconds between health checks (default 5).
+#' @param heartbeat_interval Deprecated and unused. Pool health checks are
+#'   triggered per dispatched chunk rather than on a wall-clock interval; use
+#'   the `health_check_interval` argument of [shard_map()] / [shard_reduce()]
+#'   to control cadence. Supplying a non-default value emits a deprecation
+#'   warning and otherwise has no effect.
 #' @param min_recycle_interval Numeric. Minimum time in seconds between recycling
 #'   the same worker (default 1.0). This prevents thrashing PSOCK worker creation
 #'   under extremely tight RSS limits.
@@ -47,6 +51,16 @@ pool_create <- function(n = .default_workers(),
   if (is.na(n)) n <- 1L
   if (n < 1L) {
     stop("pool_create: n must be >= 1", call. = FALSE)
+  }
+
+  # heartbeat_interval is deprecated: nothing ever read it (health checks are
+  # count-driven per dispatched chunk, not time-driven). Warn on non-default
+  # use rather than silently ignoring it.
+  if (!isTRUE(heartbeat_interval == 5)) {
+    warning("pool_create(): 'heartbeat_interval' is deprecated and has no ",
+            "effect. Health checks run per dispatched chunk; use the ",
+            "'health_check_interval' argument of shard_map()/shard_reduce() ",
+            "to control cadence.", call. = FALSE)
   }
 
   rss_limit_bytes <- parse_bytes(rss_limit)
@@ -96,6 +110,16 @@ pool_create <- function(n = .default_workers(),
       dev_path = dev_path,
       init_expr = init_expr,
       packages = packages,
+      # Worker bootstrap manifest: an environment (reference semantics, so it
+      # is shared by all copies of this pool list) recording the globals that
+      # dispatch paths exported to workers (.shard_borrow, .shard_out,
+      # .shard_dispatch_fun, ...). Restart/recycle paths replay it so a fresh
+      # replacement worker has the same state as its predecessor.
+      manifest = local({
+        m <- new.env(parent = emptyenv())
+        m$exports <- list()
+        m
+      }),
       created_at = Sys.time(),
       stats = list(
         total_recycles = 0L,
@@ -138,6 +162,73 @@ pool_get <- function() {
   .pool_env$pool
 }
 
+# --- Worker bootstrap manifest ----------------------------------------------
+#
+# Workers receive state lazily via clusterExport() (.shard_borrow, .shard_out,
+# .shard_auto_table_sink, .shard_dispatch_fun, .shard_dispatch_args). A worker
+# that dies or is recycled comes back with a clean global environment; without
+# replaying these exports every task sent to it fails until retries are
+# exhausted (retry storms / permanent failures). The export helpers record what
+# was exported in `pool$manifest`, and every restart/recycle path calls
+# pool_bootstrap_worker_() to replay it to the fresh worker.
+
+pool_manifest_ <- function(pool) {
+  m <- pool$manifest
+  if (is.null(m) || !is.environment(m)) {
+    return(NULL)
+  }
+  m
+}
+
+pool_manifest_record_ <- function(pool, name, value) {
+  m <- pool_manifest_(pool)
+  if (is.null(m)) {
+    return(invisible(NULL))
+  }
+  if (is.null(m$exports)) m$exports <- list()
+  m$exports[[name]] <- value
+  invisible(NULL)
+}
+
+pool_manifest_clear_ <- function(pool, name = NULL) {
+  m <- pool_manifest_(pool)
+  if (is.null(m)) {
+    return(invisible(NULL))
+  }
+  if (is.null(name)) {
+    m$exports <- list()
+  } else if (!is.null(m$exports) && name %in% names(m$exports)) {
+    m$exports[[name]] <- NULL
+  }
+  invisible(NULL)
+}
+
+pool_bootstrap_worker_ <- function(pool, worker_id) {
+  m <- pool_manifest_(pool)
+  if (is.null(m)) {
+    return(invisible(NULL))
+  }
+  exports <- m$exports
+  if (length(exports) == 0) {
+    return(invisible(NULL))
+  }
+
+  w <- pool$workers[[worker_id]]
+  if (is.null(w) || !worker_is_alive(w)) {
+    return(invisible(NULL))
+  }
+
+  export_env <- list2env(exports, parent = emptyenv())
+  tryCatch(
+    parallel::clusterExport(w$cluster, names(exports), envir = export_env),
+    error = function(e) {
+      warning("Failed to replay worker bootstrap state to worker ", worker_id,
+              ": ", conditionMessage(e), call. = FALSE)
+    }
+  )
+  invisible(NULL)
+}
+
 pool_restart_worker_ <- function(pool, worker_id, graceful = TRUE) {
   old_worker <- pool$workers[[worker_id]]
   if (!is.null(old_worker)) {
@@ -153,6 +244,11 @@ pool_restart_worker_ <- function(pool, worker_id, graceful = TRUE) {
   pool$workers[[worker_id]]$needs_recycle <- FALSE
   pool$workers[[worker_id]]$rss_baseline <- worker_rss(pool$workers[[worker_id]])
   pool$stats$total_deaths <- pool$stats$total_deaths + 1L
+
+  # Replay exported worker state (borrow/out/sink/dispatch fun) so the
+  # replacement can execute queued chunks without a retry storm.
+  pool_bootstrap_worker_(pool, worker_id)
+
   .pool_env$pool <- pool
 
   pool
@@ -295,6 +391,7 @@ pool_health_check <- function(pool = NULL, busy_workers = NULL) {
           pool$workers[[i]]$needs_recycle <- FALSE
           pool$workers[[i]]$rss_baseline <- worker_rss(pool$workers[[i]])
           pool$stats$total_recycles <- pool$stats$total_recycles + 1L
+          pool_bootstrap_worker_(pool, i)
         }
       } else {
         w$needs_recycle <- isTRUE(w$needs_recycle)

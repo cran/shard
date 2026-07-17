@@ -19,6 +19,12 @@ NULL
 .views_env$packed_bytes <- 0
 .views_env$materialize_hotspots <- new.env(parent = emptyenv())
 
+.view_hotspots_enabled_ <- function() {
+  isTRUE(getOption("shard.view_hotspots", FALSE)) ||
+    (exists(".shard_view_hotspots_enabled", envir = .shard_worker_env, inherits = FALSE) &&
+       isTRUE(get(".shard_view_hotspots_enabled", envir = .shard_worker_env, inherits = FALSE)))
+}
+
 elem_size_bytes <- function(x) {
   switch(
     typeof(x),
@@ -118,7 +124,11 @@ idx_print <- function(x) {
     cl <- calls[[i]]
     if (!is.call(cl)) next
     fn <- tryCatch(as.character(cl[[1]]), error = function(e) "")
-    if (!nzchar(fn) || fn %in% skip) next
+    # A call head can deparse to length != 1 (e.g. an anonymous-function
+    # call like `(function(x) {...})(v)`); take the first element so the
+    # scalar `if` below cannot error under R >= 4.3.
+    fn <- if (length(fn) >= 1L) fn[[1L]] else ""
+    if (is.na(fn) || !nzchar(fn) || fn %in% skip) next
     txt <- paste(deparse(cl, nlines = 1L, width.cutoff = 200L), collapse = " ")
     if (nzchar(txt)) return(txt)
   }
@@ -131,6 +141,7 @@ idx_print <- function(x) {
 .view_record_materialization_ <- function(nbytes) {
   nbytes <- as.double(nbytes)
   if (!is.finite(nbytes) || is.na(nbytes) || nbytes <= 0) return(invisible(NULL))
+  if (!.view_hotspots_enabled_()) return(invisible(NULL))
 
   key <- .view_hotspot_key_()
   if (!exists(key, envir = .views_env$materialize_hotspots, inherits = FALSE)) {

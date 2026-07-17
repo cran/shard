@@ -38,7 +38,11 @@ as first argument, followed by borrowed inputs and outputs. You can also
 select a registered kernel via \verb{kernel=} instead of providing \verb{fun=}.}
 
 \item{borrow}{Named list of shared inputs. These are exported to workers
-once and reused across shards. Treated as read-only by default.}
+once and reused across shards. Treated as read-only by default. Large
+inputs that are not already shared (see \code{\link[=share]{share()}}) are copied into a
+temporary shared segment on every \code{shard_map()} call and destroyed on
+exit; for iterative workflows over the same data, call \code{\link[=share]{share()}} once
+up front to pay that copy only once.}
 
 \item{out}{Named list of output buffers (from \code{buffer()}). Workers write
 results directly to these buffers.}
@@ -100,6 +104,12 @@ contiguous shard block sizing.
 log to disk to aid debugging failed tasks (default FALSE).
 \item \code{error_log_max_lines}: integer. Maximum lines per worker in the error
 log (default 100).
+\item \code{claim_batch}: integer. Number of task ids a worker claims per
+shared-queue call (default 1, i.e. classic one-at-a-time claiming; 32
+under \code{profile="speed"}; also settable globally via
+\code{options(shard.shm_queue_claim_batch=)}). Small batches amortize
+per-claim overhead for very cheap tasks at a slight cost in tail load
+balancing.
 }
 }}
 
@@ -124,7 +134,15 @@ If numeric, specifies drift threshold (default 0.5 = 50\% growth).}
 \item{cow}{Copy-on-write policy for borrowed inputs: \code{"deny"} (error on mutation),
 \code{"audit"} (detect and flag), or \code{"allow"} (permit with tracking).}
 
-\item{seed}{Integer. RNG seed for reproducibility. If NULL, no seed is set.}
+\item{seed}{Integer. RNG seed for reproducibility. When supplied, each
+shard gets its own L'Ecuyer-CMRG stream derived from \code{seed} (via
+\code{\link[parallel:RngStream]{parallel::nextRNGStream()}}), installed immediately before the kernel
+runs on that shard. RNG-using kernels therefore return identical results
+for the same \code{seed} regardless of \verb{workers=}, \verb{chunk_size=}, or dynamic
+shard-to-worker assignment (including worker restarts). With
+\code{shard_map(N, ...)}, a deterministic worker-count-independent shard
+decomposition is used and online autotuning is disabled. If NULL
+(default), RNG state is not touched.}
 
 \item{diagnostics}{Logical. Collect detailed diagnostics (default TRUE).}
 
@@ -136,7 +154,9 @@ If numeric, specifies drift threshold (default 0.5 = 50\% growth).}
 
 \item{max_retries}{Integer. Maximum retries per shard on failure (default 3).}
 
-\item{health_check_interval}{Integer. Check worker health every N shards (default 10).}
+\item{health_check_interval}{Integer. Check worker health every N shards
+(default 10). The \code{profile} presets adjust this (\code{"memory"} = 5,
+\code{"speed"} = 50) unless a value is supplied explicitly.}
 }
 \value{
 A \code{shard_result} object containing:

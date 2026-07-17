@@ -132,7 +132,9 @@ shards_list <- function(idxs) {
 
   structure(
     list(
-      n = length(shards),
+      # n is the total item count (matching shards()), not the shard count;
+      # print()/callers report it as "Items". num_shards holds the shard count.
+      n = sum(vapply(shards, function(s) s$len, integer(1))),
       block_size = NA_integer_,
       strategy = "list",
       num_shards = length(shards),
@@ -169,20 +171,24 @@ autotune_block_size <- function(n, workers,
 
   # Block size from target shard counts
   block_from_min <- ceiling(n / min_shards)
-  block_from_max <- max(floor(n / max_shards), 1L)
+  block_from_max <- max(ceiling(n / max_shards), 1L)
 
   # Start with block size for good parallelism
 
   block_size <- max(block_from_min, 1L)
 
-  # Apply memory budget constraint if specified
-  if (scratch_bytes_per_item > 0 && scratch_budget > 0) {
-    if (is.character(scratch_budget)) {
-      scratch_budget <- parse_bytes(scratch_budget)
-    }
+  # Apply memory budget constraint if specified.
+  if (is.character(scratch_budget)) {
+    scratch_budget <- parse_bytes(scratch_budget)
+  }
+  scratch_budget <- as.numeric(scratch_budget)[1L]
+  scratch_bytes_per_item <- as.numeric(scratch_bytes_per_item)[1L]
+  memory_constrained_block <- NULL
+  if (!is.na(scratch_bytes_per_item) && scratch_bytes_per_item > 0 &&
+      !is.na(scratch_budget) && scratch_budget > 0) {
     max_items_per_budget <- scratch_budget / scratch_bytes_per_item
-    memory_constrained_block <- floor(max_items_per_budget / workers)
-    if (memory_constrained_block > 0 && memory_constrained_block < block_size) {
+    memory_constrained_block <- max(floor(max_items_per_budget / workers), 1L)
+    if (memory_constrained_block < block_size) {
       block_size <- memory_constrained_block
     }
   }
@@ -192,8 +198,17 @@ autotune_block_size <- function(n, workers,
   if (num_shards < min_shards && block_from_min > 1L) {
     block_size <- block_from_min
   }
+  num_shards <- ceiling(n / block_size)
   if (num_shards > max_shards && block_from_max > 0L) {
-    block_size <- max(block_from_max, block_size)
+    if (!is.null(memory_constrained_block) && memory_constrained_block < block_from_max) {
+      warning(
+        "scratch_budget requires more than max_shards_per_worker shards; ",
+        "using memory-constrained block size.",
+        call. = FALSE
+      )
+    } else {
+      block_size <- max(block_from_max, block_size)
+    }
   }
 
   max(as.integer(block_size), 1L)
@@ -291,35 +306,52 @@ create_strided_shards <- function(n, num_shards) {
 
 #' Parse Count String
 #'
-#' Parses strings like "1K", "10K", "1M" to integers.
+#' Parses strings like "1K", "10K", "1M", "3B" to counts.
 #'
-#' @param x Character string.
-#' @return Integer value.
+#' @param x Character string or numeric.
+#' @return Numeric count: an integer when the value fits in integer range,
+#'   otherwise a double (e.g. "3B" = 3e9). Errors on malformed input.
 #' @keywords internal
 #' @noRd
 parse_count <- function(x) {
-  if (is.numeric(x)) return(as.integer(x))
+  if (is.numeric(x)) {
+    value <- as.numeric(x)
+    multiplier <- 1
+  } else {
+    x <- toupper(trimws(x))
+    match <- regexec("^([0-9.]+)\\s*(K|M|B)?$", x)
+    parts <- regmatches(x, match)[[1]]
 
-  x <- toupper(trimws(x))
-  match <- regexec("^([0-9.]+)\\s*(K|M|B)?$", x)
-  parts <- regmatches(x, match)[[1]]
+    if (length(parts) < 2) {
+      stop("Cannot parse count string: ", x, call. = FALSE)
+    }
 
-  if (length(parts) < 2) {
-    stop("Cannot parse count string: ", x, call. = FALSE)
+    value <- suppressWarnings(as.numeric(parts[2]))
+    if (is.na(value)) {
+      stop("Cannot parse count string: '", x,
+           "' (malformed number '", parts[2], "')", call. = FALSE)
+    }
+    unit <- if (length(parts) >= 3) parts[3] else ""
+
+    # NOTE: for counts, "B" means billions (1e9). This intentionally differs
+    # from parse_bytes() in utils.R, where "B" means bytes.
+    multiplier <- switch(
+      unit,
+      "K" = 1e3,
+      "M" = 1e6,
+      "B" = 1e9,
+      1
+    )
   }
 
-  value <- as.numeric(parts[2])
-  unit <- if (length(parts) >= 3) parts[3] else ""
+  # Compute in double to avoid integer overflow (e.g. "3B" > .Machine$integer.max).
+  result <- value * multiplier
+  if (length(result) != 1L || !is.finite(result) || result < 0) {
+    stop("Cannot parse count: ", paste(format(x), collapse = ", "),
+         " (value out of range or not finite)", call. = FALSE)
+  }
 
-  multiplier <- switch(
-    unit,
-    "K" = 1000L,
-    "M" = 1000000L,
-    "B" = 1000000000L,
-    1L
-  )
-
-  as.integer(value * multiplier)
+  if (result <= .Machine$integer.max) as.integer(result) else result
 }
 
 #' Print a shard_descriptor Object

@@ -92,12 +92,22 @@ worker_spawn <- function(id, init_expr = NULL, packages = NULL, dev_path = NULL)
     }, init_expr)
   }
 
+  # Cache a ps handle at spawn time: creating handles is comparatively
+  # expensive (done per liveness probe otherwise), and a handle pinned to the
+  # spawn-time process detects PID reuse where a fresh handle would not.
+  ps_handle <- if (!is.na(pid) && has_ps_()) {
+    tryCatch(ps::ps_handle(pid), error = function(e) NULL)
+  } else {
+    NULL
+  }
+
   structure(
     list(
       id = id,
       pid = pid,
       cluster = cl,
       node = node,
+      ps_handle = ps_handle,
       spawned_at = Sys.time(),
       rss_baseline = NA_real_,
       recycle_count = 0L,
@@ -122,12 +132,21 @@ worker_is_alive <- function(worker) {
   }
 
   # Prefer a PID-level check: cluster round-trips can fail when the worker is
-  # legitimately busy (e.g. during async sendCall/recv dispatch).
-  if (!is.na(worker$pid) && isTRUE(pid_is_alive(worker$pid))) {
-    return(TRUE)
+  # legitimately busy (e.g. during async sendCall/recv dispatch). When the PID
+  # is known, trust it in BOTH directions: pinging a dead worker's socket
+  # writes to a closed connection, which raises SIGPIPE on the master. R can
+  # turn that pending signal into an error inside serialization C code
+  # ("ignoring SIGPIPE signal"), corrupting the PROTECT stack and crashing the
+  # master (observed on macOS with kill-mid-dispatch workloads).
+  if (!is.null(worker$ps_handle)) {
+    return(tryCatch(isTRUE(ps::ps_is_running(worker$ps_handle)),
+                    error = function(e) FALSE))
+  }
+  if (!is.na(worker$pid)) {
+    return(isTRUE(pid_is_alive(worker$pid)))
   }
 
-  # Fallback: try a simple ping.
+  # PID unknown: fall back to a simple ping.
   tryCatch({
     result <- parallel::clusterCall(worker$cluster, function() TRUE)
     isTRUE(result[[1]])
@@ -389,16 +408,30 @@ pid_is_alive <- function(pid) {
   if (is.na(pid)) return(FALSE)
 
   # Use ps package if available
-  if (requireNamespace("ps", quietly = TRUE)) {
+  if (has_ps_()) {
     tryCatch({
       p <- ps::ps_handle(pid)
       ps::ps_is_running(p)
     }, error = function(e) FALSE)
+  } else if (.Platform$OS.type == "unix") {
+    # Fallback: kill(pid, 0). pskill() returns the success flag (invisibly)
+    # rather than erroring, so the result must be checked, not assumed.
+    isTRUE(tryCatch(tools::pskill(pid, signal = 0L), error = function(e) FALSE))
   } else {
-    # Fallback: try to send signal 0
-    tryCatch({
-      tools::pskill(pid, signal = 0L)
-      TRUE
-    }, error = function(e) FALSE)
+    # No reliable signal-0 probe on Windows without `ps`; report alive rather
+    # than trigger spurious worker restarts.
+    TRUE
   }
 }
+
+# Memoized availability of the suggested `ps` package: requireNamespace() is
+# too expensive to run once per liveness probe per worker per poll tick.
+has_ps_ <- local({
+  flag <- NULL
+  function() {
+    if (is.null(flag)) {
+      flag <<- requireNamespace("ps", quietly = TRUE)
+    }
+    flag
+  }
+})

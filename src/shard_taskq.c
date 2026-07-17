@@ -20,6 +20,22 @@
 
 /* The queue is stored inside a shard_segment_t's mapped address. */
 
+/*
+ * Header layout note: this struct is private to this translation unit (the
+ * queue lives in shared memory, but master and workers always run the same
+ * compiled shard.so, and a queue never outlives a single dispatch), so its
+ * layout may change between package versions. The header is padded to 64
+ * bytes so the hot counters (claim_cursor in particular) do not share a
+ * cache line with task slots.
+ *
+ * claim_cursor is the O(1)-amortized claim fast path: each claimer does a
+ * fetch_add to obtain a unique candidate slot and CASes it PENDING->CLAIMED.
+ * Slots that are requeued *behind* the cursor (retry via mark_error, or
+ * reset_claims after a worker death) are picked up by a fallback linear
+ * sweep that runs only once the cursor has reached the end of the array.
+ */
+#define SHARD_TASKQ_HEADER_BYTES 64
+
 #if SHARD_HAVE_ATOMICS
 typedef struct {
     atomic_int state;
@@ -32,9 +48,14 @@ typedef struct {
     atomic_int done_count;
     atomic_int failed_count;
     atomic_int retry_total;
+    atomic_int claim_cursor; /* next candidate slot for the claim fast path */
+    char pad_[SHARD_TASKQ_HEADER_BYTES - 5 * sizeof(atomic_int)];
     /* C99 flexible array member -- avoids UBSAN out-of-bounds on tasks[i] */
     shard_taskq_task_t tasks[];
 } shard_taskq_header_t;
+
+_Static_assert(sizeof(shard_taskq_header_t) == SHARD_TASKQ_HEADER_BYTES,
+               "taskq header must be exactly 64 bytes");
 #else
 typedef struct {
     int state;
@@ -47,8 +68,17 @@ typedef struct {
     int done_count;
     int failed_count;
     int retry_total;
+    int claim_cursor; /* mirrors the atomic layout; see fallback note below */
+    char pad_[SHARD_TASKQ_HEADER_BYTES - 5 * sizeof(int)];
     shard_taskq_task_t tasks[]; /* C99 flexible array member */
 } shard_taskq_header_t;
+/*
+ * Fallback note (no C11 atomics): taskq_supported() returns FALSE, the R
+ * layer never selects shm_queue dispatch (see R/shard_map.R), and claim/
+ * mark_done/mark_error below are inert stubs. The struct mirrors the atomic
+ * layout only so sizeof arithmetic and init/stats stay consistent; there is
+ * no cross-process synchronization in this branch by design.
+ */
 #endif
 
 static shard_segment_t *seg_from_xptr(SEXP seg_ptr) {
@@ -71,9 +101,36 @@ static size_t taskq_required_size(int n_tasks) {
     return sizeof(shard_taskq_header_t) + (size_t)n_tasks * sizeof(shard_taskq_task_t);
 }
 
+#if SHARD_HAVE_ATOMICS
+/*
+ * Load n_tasks from the shared header and validate it against the segment
+ * size before any code iterates over tasks[]. The header lives in
+ * cross-process shared memory and must be treated as untrusted input: a
+ * corrupt or hostile n_tasks would otherwise drive out-of-bounds reads and
+ * writes over the flexible tasks[] array. The bound is computed without
+ * multiplication so a huge n_tasks cannot wrap size_t.
+ */
+static int taskq_checked_n(shard_segment_t *seg, shard_taskq_header_t *hdr) {
+    int n = atomic_load(&hdr->n_tasks);
+    size_t have = shard_segment_size(seg);
+    if (n < 1 ||
+        have < sizeof(shard_taskq_header_t) ||
+        (size_t)n > (have - sizeof(shard_taskq_header_t)) / sizeof(shard_taskq_task_t)) {
+        error("task queue header is invalid (n_tasks=%d exceeds segment capacity)", n);
+    }
+    return n;
+}
+#endif /* SHARD_HAVE_ATOMICS */
+
 SEXP C_shard_taskq_supported(void) {
 #if SHARD_HAVE_ATOMICS
-    return ScalarLogical(1);
+    /* The queue synchronizes master and workers through atomics in a mapped
+     * (cross-process) region. That is only sound if atomic_int is genuinely
+     * lock-free and address-free; a lock-backed fallback synchronizes on a
+     * per-process mutex embedded in the object and would silently fail to
+     * coordinate across processes. Require lock-free before advertising
+     * support so callers fall back to rpc_chunked on such an ABI. */
+    return ScalarLogical(ATOMIC_INT_LOCK_FREE == 2 ? 1 : 0);
 #else
     return ScalarLogical(0);
 #endif
@@ -91,6 +148,9 @@ SEXP C_shard_taskq_init(SEXP seg_ptr, SEXP n_tasks_) {
     if (have < need) {
         error("segment too small for task queue (need %zu bytes, have %zu)", need, have);
     }
+    if (seg->readonly) {
+        error("cannot initialize task queue in a read-only segment");
+    }
 
     shard_taskq_header_t *hdr = hdr_from_seg(seg);
     /* Zero the entire region used by the queue */
@@ -101,6 +161,7 @@ SEXP C_shard_taskq_init(SEXP seg_ptr, SEXP n_tasks_) {
     atomic_store(&hdr->done_count, 0);
     atomic_store(&hdr->failed_count, 0);
     atomic_store(&hdr->retry_total, 0);
+    atomic_store(&hdr->claim_cursor, 0);
     for (int i = 0; i < n_tasks; i++) {
         atomic_store(&hdr->tasks[i].state, SHARD_TASKQ_PENDING);
         atomic_store(&hdr->tasks[i].retry_count, 0);
@@ -111,6 +172,7 @@ SEXP C_shard_taskq_init(SEXP seg_ptr, SEXP n_tasks_) {
     hdr->done_count = 0;
     hdr->failed_count = 0;
     hdr->retry_total = 0;
+    hdr->claim_cursor = 0;
     for (int i = 0; i < n_tasks; i++) {
         hdr->tasks[i].state = SHARD_TASKQ_PENDING;
         hdr->tasks[i].retry_count = 0;
@@ -121,6 +183,61 @@ SEXP C_shard_taskq_init(SEXP seg_ptr, SEXP n_tasks_) {
     return ScalarLogical(1);
 }
 
+#if SHARD_HAVE_ATOMICS
+/* Try to claim slot i (0-based). Returns 1 on success. */
+static int taskq_try_claim_slot(shard_taskq_header_t *hdr, int i, int worker_id) {
+    int expected = SHARD_TASKQ_PENDING;
+    if (atomic_compare_exchange_strong(&hdr->tasks[i].state, &expected, SHARD_TASKQ_CLAIMED)) {
+        atomic_store(&hdr->tasks[i].claimed_by, worker_id);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Claim one task. Returns the 1-based task id, or 0 if no task is claimable
+ * right now (all done/failed/claimed-by-others). The state CAS is the sole
+ * claim gate, so a task can never be double-claimed; the cursor is only an
+ * iteration hint.
+ *
+ * Fast path: fetch_add on claim_cursor hands each caller a unique candidate
+ * slot; non-PENDING candidates (done/failed/claimed) are skipped by
+ * advancing again, so claims are O(1) amortized over the run.
+ *
+ * Fallback sweep: tasks requeued behind the cursor (mark_error retry, or
+ * reset_claims after a worker death) are found by a linear sweep that runs
+ * only once the cursor has reached the end AND unfinished tasks remain.
+ */
+static int taskq_claim_one(shard_taskq_header_t *hdr, int worker_id, int n) {
+    for (;;) {
+        int i = atomic_fetch_add(&hdr->claim_cursor, 1);
+        if (i >= n) {
+            /* Clamp the cursor back to n so repeated polling cannot creep
+             * it toward INT_MAX. CAS failure (someone else advanced or
+             * already clamped) is harmless. */
+            int cur = i + 1;
+            if (cur > n) {
+                atomic_compare_exchange_strong(&hdr->claim_cursor, &cur, n);
+            }
+            break;
+        }
+        if (taskq_try_claim_slot(hdr, i, worker_id)) return i + 1;
+    }
+
+    /* Cursor exhausted. Sweep only if some tasks are neither done nor
+     * failed: those may be PENDING again behind the cursor (retries), or
+     * still running on other workers (sweep finds nothing; caller polls). */
+    int done = atomic_load(&hdr->done_count);
+    int failed = atomic_load(&hdr->failed_count);
+    if (done + failed >= n) return 0;
+
+    for (int i = 0; i < n; i++) {
+        if (taskq_try_claim_slot(hdr, i, worker_id)) return i + 1;
+    }
+    return 0;
+}
+#endif /* SHARD_HAVE_ATOMICS */
+
 SEXP C_shard_taskq_claim(SEXP seg_ptr, SEXP worker_id_) {
     shard_segment_t *seg = seg_from_xptr(seg_ptr);
     int worker_id = asInteger(worker_id_);
@@ -129,18 +246,53 @@ SEXP C_shard_taskq_claim(SEXP seg_ptr, SEXP worker_id_) {
     shard_taskq_header_t *hdr = hdr_from_seg(seg);
 
 #if SHARD_HAVE_ATOMICS
-    int n = atomic_load(&hdr->n_tasks);
-    for (int i = 0; i < n; i++) {
-        int expected = SHARD_TASKQ_PENDING;
-        if (atomic_compare_exchange_strong(&hdr->tasks[i].state, &expected, SHARD_TASKQ_CLAIMED)) {
-            atomic_store(&hdr->tasks[i].claimed_by, worker_id);
-            return ScalarInteger(i + 1);
-        }
-    }
-    return ScalarInteger(0);
+    int n = taskq_checked_n(seg, hdr);
+    return ScalarInteger(taskq_claim_one(hdr, worker_id, n));
 #else
-    /* Fallback: no atomics => no true shm_queue mode. */
+    /* Fallback: no atomics => no true shm_queue mode (taskq_supported()
+     * returns FALSE and the R layer never dispatches via shm_queue). */
+    (void)hdr;
     return ScalarInteger(0);
+#endif
+}
+
+/*
+ * Batched claim: claim up to max_tasks tasks in one call and return their
+ * 1-based ids as an integer vector. Length 0 means nothing is claimable
+ * right now (same convention as a 0 return from C_shard_taskq_claim; the
+ * caller should consult stats to distinguish "drained" from "in flight").
+ */
+SEXP C_shard_taskq_claim_range(SEXP seg_ptr, SEXP worker_id_, SEXP max_tasks_) {
+    shard_segment_t *seg = seg_from_xptr(seg_ptr);
+    int worker_id = asInteger(worker_id_);
+    int k = asInteger(max_tasks_);
+    if (worker_id == NA_INTEGER || worker_id < 1) error("worker_id must be >= 1");
+    if (k == NA_INTEGER || k < 1) error("max_tasks must be >= 1");
+
+    shard_taskq_header_t *hdr = hdr_from_seg(seg);
+
+#if SHARD_HAVE_ATOMICS
+    int n = taskq_checked_n(seg, hdr);
+    if (k > n) k = n;
+
+    SEXP ids = PROTECT(allocVector(INTSXP, k));
+    int m = 0;
+    while (m < k) {
+        int id = taskq_claim_one(hdr, worker_id, n);
+        if (id == 0) break;
+        INTEGER(ids)[m++] = id;
+    }
+    if (m < k) {
+        SEXP trimmed = PROTECT(allocVector(INTSXP, m));
+        if (m > 0) memcpy(INTEGER(trimmed), INTEGER(ids), (size_t)m * sizeof(int));
+        UNPROTECT(2);
+        return trimmed;
+    }
+    UNPROTECT(1);
+    return ids;
+#else
+    (void)hdr;
+    return allocVector(INTSXP, 0);
 #endif
 }
 
@@ -152,7 +304,7 @@ SEXP C_shard_taskq_mark_done(SEXP seg_ptr, SEXP task_id_) {
     shard_taskq_header_t *hdr = hdr_from_seg(seg);
 
 #if SHARD_HAVE_ATOMICS
-    int n = atomic_load(&hdr->n_tasks);
+    int n = taskq_checked_n(seg, hdr);
     if (task_id > n) error("task_id out of range");
     int idx = task_id - 1;
     atomic_store(&hdr->tasks[idx].state, SHARD_TASKQ_DONE);
@@ -160,6 +312,7 @@ SEXP C_shard_taskq_mark_done(SEXP seg_ptr, SEXP task_id_) {
     atomic_fetch_add(&hdr->done_count, 1);
     return ScalarLogical(1);
 #else
+    (void)hdr;
     return ScalarLogical(0);
 #endif
 }
@@ -174,7 +327,7 @@ SEXP C_shard_taskq_mark_error(SEXP seg_ptr, SEXP task_id_, SEXP max_retries_) {
     shard_taskq_header_t *hdr = hdr_from_seg(seg);
 
 #if SHARD_HAVE_ATOMICS
-    int n = atomic_load(&hdr->n_tasks);
+    int n = taskq_checked_n(seg, hdr);
     if (task_id > n) error("task_id out of range");
     int idx = task_id - 1;
 
@@ -191,6 +344,7 @@ SEXP C_shard_taskq_mark_error(SEXP seg_ptr, SEXP task_id_, SEXP max_retries_) {
         return ScalarLogical(1);
     }
 #else
+    (void)hdr;
     return ScalarLogical(0);
 #endif
 }
@@ -203,7 +357,7 @@ SEXP C_shard_taskq_reset_claims(SEXP seg_ptr, SEXP worker_id_) {
     shard_taskq_header_t *hdr = hdr_from_seg(seg);
 
 #if SHARD_HAVE_ATOMICS
-    int n = atomic_load(&hdr->n_tasks);
+    int n = taskq_checked_n(seg, hdr);
     int reset = 0;
     for (int i = 0; i < n; i++) {
         int st = atomic_load(&hdr->tasks[i].state);
@@ -215,6 +369,7 @@ SEXP C_shard_taskq_reset_claims(SEXP seg_ptr, SEXP worker_id_) {
     }
     return ScalarInteger(reset);
 #else
+    (void)hdr;
     return ScalarInteger(0);
 #endif
 }
@@ -224,7 +379,7 @@ SEXP C_shard_taskq_stats(SEXP seg_ptr) {
     shard_taskq_header_t *hdr = hdr_from_seg(seg);
 
 #if SHARD_HAVE_ATOMICS
-    int n = atomic_load(&hdr->n_tasks);
+    int n = taskq_checked_n(seg, hdr);
     int done = atomic_load(&hdr->done_count);
     int failed = atomic_load(&hdr->failed_count);
     int retries = atomic_load(&hdr->retry_total);
@@ -243,6 +398,7 @@ SEXP C_shard_taskq_stats(SEXP seg_ptr) {
     UNPROTECT(2);
     return out;
 #else
+    (void)hdr;
     SEXP out = PROTECT(allocVector(VECSXP, 4));
     SEXP names = PROTECT(allocVector(STRSXP, 4));
     SET_STRING_ELT(names, 0, mkChar("n_tasks"));
@@ -264,7 +420,7 @@ SEXP C_shard_taskq_failures(SEXP seg_ptr) {
     shard_taskq_header_t *hdr = hdr_from_seg(seg);
 
 #if SHARD_HAVE_ATOMICS
-    int n = atomic_load(&hdr->n_tasks);
+    int n = taskq_checked_n(seg, hdr);
     /* Count failures */
     int nf = 0;
     for (int i = 0; i < n; i++) {
@@ -290,6 +446,7 @@ SEXP C_shard_taskq_failures(SEXP seg_ptr) {
     UNPROTECT(4);
     return out;
 #else
+    (void)hdr;
     SEXP ids = PROTECT(allocVector(INTSXP, 0));
     SEXP rcs = PROTECT(allocVector(INTSXP, 0));
     SEXP out = PROTECT(allocVector(VECSXP, 2));

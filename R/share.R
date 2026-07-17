@@ -27,9 +27,62 @@
 #' @useDynLib shard, .registration = TRUE
 NULL
 
+.share_validation_env <- new.env(parent = emptyenv())
+.share_validation_env$walks <- 0L
+
+share_validation_diagnostics <- function() {
+    list(walks = .share_validation_env$walks)
+}
+
+share_validation_reset_diagnostics <- function() {
+    .share_validation_env$walks <- 0L
+    invisible(NULL)
+}
+
+.validate_serializable_forbidden <- function(x, path = "x") {
+    if (is.function(x)) {
+        stop("Cannot share functions (closures).\n",
+             "  Found at: ", path, "\n",
+             "  Hint: Extract the data you need and share that instead.",
+             call. = FALSE)
+    }
+
+    if (typeof(x) == "externalptr") {
+        stop("Cannot share external pointers.\n",
+             "  Found at: ", path, "\n",
+             "  External pointers reference memory that cannot be serialized.",
+             call. = FALSE)
+    }
+
+    if (inherits(x, "connection")) {
+        stop("Cannot share connection objects.\n",
+             "  Found at: ", path, "\n",
+             "  Connections cannot be serialized.",
+             call. = FALSE)
+    }
+
+    invisible(NULL)
+}
+
+.validate_environment_bindings_shallow <- function(e, path = "x") {
+    nms <- ls(envir = e, all.names = TRUE)
+    if (length(nms) == 0L) return(invisible(NULL))
+
+    vals <- mget(nms, envir = e, inherits = FALSE)
+    for (nm in names(vals)) {
+        .validate_serializable_forbidden(vals[[nm]], paste0(path, "$", nm))
+    }
+
+    invisible(NULL)
+}
+
 # Internal helper: check for non-serializable objects
 # Returns NULL on success, stops with error on failure
 validate_serializable <- function(x, path = "x", seen = NULL) {
+    if (identical(path, "x")) {
+        .share_validation_env$walks <- .share_validation_env$walks + 1L
+    }
+
     # Guard against cycles/aliases during validation (environments can be truly
     # cyclic; lists can alias). We only need to ensure we don't recurse forever.
     if (is.null(seen)) {
@@ -45,29 +98,7 @@ validate_serializable <- function(x, path = "x", seen = NULL) {
         assign(id, TRUE, envir = seen)
     }
 
-    # Check for functions (closures)
-    if (is.function(x)) {
-        stop("Cannot share functions (closures).\n",
-             "  Found at: ", path, "\n",
-             "  Hint: Extract the data you need and share that instead.",
-             call. = FALSE)
-    }
-
-    # Check for external pointers
-    if (typeof(x) == "externalptr") {
-        stop("Cannot share external pointers.\n",
-             "  Found at: ", path, "\n",
-             "  External pointers reference memory that cannot be serialized.",
-             call. = FALSE)
-    }
-
-    # Check for connections
-    if (inherits(x, "connection")) {
-        stop("Cannot share connection objects.\n",
-             "  Found at: ", path, "\n",
-             "  Connections cannot be serialized.",
-             call. = FALSE)
-    }
+    .validate_serializable_forbidden(x, path)
 
     # Recursively check environments
     if (is.environment(x)) {
@@ -263,6 +294,8 @@ share_deep_traverse <- function(x,
                                 mode = "balanced",
                                 types = c("double", "integer", "logical", "raw", "complex"),
                                 hook_result = NULL) {
+    .validate_serializable_forbidden(x, path)
+
     env_has_self_cycle_ <- function(e) {
         # R lists don't form true cycles, but environments can via bindings or
         # parent.env(e) == e. We don't deep-traverse environments yet, but we
@@ -287,6 +320,7 @@ share_deep_traverse <- function(x,
                  "  Hint: Use mode='balanced' to skip environment slots.",
                  call. = FALSE)
         }
+        .validate_environment_bindings_shallow(x, path)
         if (cycle_policy == "error" && env_has_self_cycle_(x)) {
             stop("Cycle detected during deep sharing.\n",
                  "  Path: ", path, "\n",
@@ -822,8 +856,12 @@ fetch_deep_reconstruct <- function(node) {
 #' @param readonly Logical. If TRUE (default), the segment is protected after
 #'   writing, making it read-only. Set to FALSE only if you need to modify
 #'   the shared data (advanced use case).
-#' @param name Optional name for the shared object. If NULL (default), a unique
-#'   name is generated. Named shares can be opened by name in other processes.
+#' @param name Optional name for the shared object's backing segment. If NULL
+#'   (default), a unique name is generated. Named shares can be opened by name
+#'   in other processes via [segment_open()]. Applies to non-deep shares only
+#'   (both the atomic fast path and the serialized path); it is ignored with a
+#'   warning for `deep = TRUE`, which fans out into multiple segments with
+#'   generated names.
 #' @param deep Logical. If TRUE, recursively traverse lists and data.frames,
 #'   sharing individual components that meet the size threshold. When FALSE
 #'   (default), the entire object is serialized as one unit.
@@ -866,14 +904,51 @@ share <- function(x,
     cycle <- match.arg(cycle)
     mode <- match.arg(mode)
 
-    # Validate input is serializable
-    validate_serializable(x)
-
     # Shareable types
     shareable_types <- c("double", "integer", "logical", "raw", "complex")
 
-    # Deep sharing: traverse structure and share components individually
+    # Fast path: shareable atomic vectors/matrices/arrays become ALTREP-backed
+    # shared vectors. This avoids per-worker serialization of large inputs.
+    if (!deep &&
+        is.atomic(x) && !is.null(x) &&
+        typeof(x) %in% c("double", "integer", "logical", "raw") &&
+        !is_shared_vector(x)) {
+        cow <- if (isTRUE(readonly)) "deny" else "allow"
+        # Build with cow='allow' so we can attach attributes, then lock down
+        # by setting shard_cow to the requested policy. `name` is threaded to
+        # the backing segment so a named atomic share is openable by name,
+        # matching the serialized (non-fast) path.
+        shared <- as_shared(x, readonly = readonly, backing = backing,
+                            cow = "allow", path = name)
+
+        # Preserve non-class attributes (dim, dimnames, names, tsp, etc).
+        attrs <- attributes(x)
+        x_class <- attr(x, "class")
+        attrs$class <- NULL
+        if (length(attrs)) {
+            for (nm in names(attrs)) {
+                attr(shared, nm) <- attrs[[nm]]
+            }
+        }
+
+        # Preserve any underlying class (e.g., Date) behind the wrapper class.
+        class(shared) <- unique(c("shard_shared_vector", x_class))
+        attr(shared, "shard_cow") <- cow
+        return(shared)
+    }
+
+    # Deep sharing: traverse structure and share components individually.
+    # Traversal owns validation so large valid object graphs are not walked once
+    # for validation and again for sharing.
     if (deep) {
+        # A deep share fans out into many segments with generated names, so a
+        # single `name` has no well-defined target. Warn rather than silently
+        # dropping it.
+        if (!is.null(name)) {
+            warning("share(): 'name' is ignored for deep shares (deep = TRUE), ",
+                    "which create multiple segments with generated names.",
+                    call. = FALSE)
+        }
         # Create environment for memoization state
         env <- new.env(parent = emptyenv())
         env$seen <- new.env(parent = emptyenv())       # identity -> {path, node_id, shared}
@@ -956,32 +1031,6 @@ share <- function(x,
         ))
     }
 
-    # Fast path: shareable atomic vectors/matrices/arrays become ALTREP-backed
-    # shared vectors. This avoids per-worker serialization of large inputs.
-    if (is.atomic(x) && !is.null(x) &&
-        typeof(x) %in% c("double", "integer", "logical", "raw") &&
-        !is_shared_vector(x)) {
-        cow <- if (isTRUE(readonly)) "deny" else "allow"
-        # Build with cow='allow' so we can attach attributes, then lock down
-        # by setting shard_cow to the requested policy.
-        shared <- as_shared(x, readonly = readonly, backing = backing, cow = "allow")
-
-        # Preserve non-class attributes (dim, dimnames, names, tsp, etc).
-        attrs <- attributes(x)
-        x_class <- attr(x, "class")
-        attrs$class <- NULL
-        if (length(attrs)) {
-            for (nm in names(attrs)) {
-                attr(shared, nm) <- attrs[[nm]]
-            }
-        }
-
-        # Preserve any underlying class (e.g., Date) behind the wrapper class.
-        class(shared) <- unique(c("shard_shared_vector", x_class))
-        attr(shared, "shard_cow") <- cow
-        return(shared)
-    }
-
     # Standard (non-deep) sharing: serialize entire object
 
     # Serialize the object (with tryCatch for edge cases)
@@ -995,6 +1044,7 @@ share <- function(x,
                  call. = FALSE)
         }
     )
+    validate_serializable(x)
     size <- length(serialized)
 
     # Create segment with enough space for the serialized data

@@ -69,6 +69,10 @@ test_that("scratch_diagnostics returns complete structure", {
 test_that("scratch_matrix validates dimensions", {
   expect_error(scratch_matrix(-1, 10), "nrow must be >= 0")
   expect_error(scratch_matrix(10, -1), "ncol must be >= 0")
+  expect_error(
+    shard:::.scratch_get_matrix(.Machine$integer.max, 2L, "too_big"),
+    "n must be >= 0"
+  )
 })
 
 test_that("scratch_matrix uses custom key when provided", {
@@ -84,6 +88,37 @@ test_that("scratch_matrix uses custom key when provided", {
 
   sd <- scratch_diagnostics()
   expect_true(sd$hits >= 1)
+})
+
+test_that("scratch_matrix stores dim-applied matrices for exact reuse", {
+  shard:::scratch_reset_diagnostics()
+
+  x1 <- scratch_matrix(3, 4, key = "shape_reuse")
+  id1 <- shard:::object_identity(x1)
+  x2 <- scratch_matrix(3, 4, key = "shape_reuse")
+  id2 <- shard:::object_identity(x2)
+
+  expect_equal(dim(x2), c(3L, 4L))
+  expect_identical(id2, id1)
+
+  sd <- scratch_diagnostics()
+  expect_equal(sd$misses, 1L)
+  expect_equal(sd$hits, 1L)
+})
+
+test_that("scratch_matrix custom-key shape changes allocate exact length", {
+  shard:::scratch_reset_diagnostics()
+
+  x1 <- scratch_matrix(4, 4, key = "shape_change")
+  x2 <- scratch_matrix(2, 2, key = "shape_change")
+
+  expect_equal(dim(x1), c(4L, 4L))
+  expect_equal(dim(x2), c(2L, 2L))
+  expect_equal(length(x2), 4L)
+
+  sd <- scratch_diagnostics()
+  expect_equal(sd$misses, 2L)
+  expect_equal(sd$hits, 0L)
 })
 
 test_that("scratch_matrix creates double matrices", {

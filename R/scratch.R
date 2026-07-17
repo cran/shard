@@ -93,6 +93,37 @@ scratch_diagnostics <- function() {
   buf
 }
 
+.scratch_get_matrix <- function(nrow, ncol, key) {
+  nrow <- as.integer(nrow)
+  ncol <- as.integer(ncol)
+  n <- as.double(nrow) * as.double(ncol)
+  if (is.na(n) || !is.finite(n) || n < 0 || n > .Machine$integer.max) {
+    stop("n must be >= 0", call. = FALSE)
+  }
+  n <- as.integer(n)
+  key <- as.character(key)
+
+  if (exists(key, envir = .scratch_env$pool, inherits = FALSE)) {
+    buf <- get(key, envir = .scratch_env$pool, inherits = FALSE)
+    if (is.double(buf) && length(buf) == n) {
+      want_dim <- c(nrow, ncol)
+      if (!identical(dim(buf), want_dim)) {
+        dim(buf) <- want_dim
+        assign(key, buf, envir = .scratch_env$pool)
+      }
+      .scratch_env$hits <- .scratch_env$hits + 1L
+      return(buf)
+    }
+  }
+
+  .scratch_env$misses <- .scratch_env$misses + 1L
+  buf <- double(n)
+  dim(buf) <- c(nrow, ncol)
+  assign(key, buf, envir = .scratch_env$pool)
+  .scratch_update_bytes()
+  buf
+}
+
 #' Get a scratch matrix
 #'
 #' Allocates (or reuses) a double matrix in the worker scratch pool.
@@ -110,7 +141,5 @@ scratch_matrix <- function(nrow, ncol, key = NULL) {
   if (is.na(nrow) || nrow < 0L) stop("nrow must be >= 0", call. = FALSE)
   if (is.na(ncol) || ncol < 0L) stop("ncol must be >= 0", call. = FALSE)
   if (is.null(key)) key <- paste0("mat_", nrow, "x", ncol)
-  buf <- .scratch_get_double(nrow * ncol, key = key)
-  dim(buf) <- c(nrow, ncol)
-  buf
+  .scratch_get_matrix(nrow, ncol, key = key)
 }

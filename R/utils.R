@@ -15,12 +15,36 @@ NULL
   if (is.null(x)) y else x
 }
 
+.worker_override <- function(value, source) {
+  if (is.null(value)) return(NULL)
+  if (is.character(value)) {
+    value <- trimws(value[1L])
+    if (is.na(value)) return(NULL)
+    if (!nzchar(value)) return(NULL)
+  }
+
+  n <- suppressWarnings(as.integer(value[1L]))
+  if (length(n) == 0L || is.na(n) || n < 1L) {
+    warning("Ignoring invalid ", source, " worker override; expected a positive integer.",
+            call. = FALSE)
+    return(NULL)
+  }
+
+  n
+}
+
 # Returns the default worker count, capped at 2 during R CMD check
 # (CRAN policy: no more than 2 parallel processes).
 .default_workers <- function() {
-  dc <- parallel::detectCores()
-  if (is.na(dc) || dc < 1L) dc <- 1L
-  n <- max(dc - 1L, 1L)
+  n <- .worker_override(getOption("shard.workers", NULL), "shard.workers")
+  if (is.null(n)) {
+    n <- .worker_override(Sys.getenv("SHARD_WORKERS", unset = ""), "SHARD_WORKERS")
+  }
+  if (is.null(n)) {
+    dc <- parallel::detectCores()
+    if (is.na(dc) || dc < 1L) dc <- 1L
+    n <- max(dc - 1L, 1L)
+  }
   if (isTRUE(as.logical(Sys.getenv("_R_CHECK_LIMIT_CORES_", "FALSE")))) {
     n <- min(n, 2L)
   }
@@ -50,7 +74,14 @@ parse_bytes <- function(x) {
     stop("Cannot parse byte string: ", x, call. = FALSE)
   }
 
-  value <- as.numeric(parts[2])
+  value <- suppressWarnings(as.numeric(parts[2]))
+  if (is.na(value)) {
+    # e.g. "1..5GB" matches the regex but is not a valid number; error here
+    # instead of returning NA, which would silently propagate into memory
+    # cap comparisons downstream.
+    stop("Cannot parse byte string: '", x,
+         "' (malformed number '", parts[2], "')", call. = FALSE)
+  }
   unit <- if (length(parts) >= 3) parts[3] else "B"
 
   multiplier <- switch(
@@ -159,11 +190,21 @@ pkg_available <- function(pkg) {
 #' @return Character string like "prefix_a1b2c3".
 #' @keywords internal
 #' @noRd
+.unique_id_env <- new.env(parent = emptyenv())
+.unique_id_env$counter <- 0L
+
 unique_id <- function(prefix = "") {
-  # Use high-resolution time + random component for uniqueness
+  # Derive entropy WITHOUT the R RNG (tempfile()-style) so calling this never
+  # consumes or perturbs the caller's `.Random.seed` / reproducible RNG
+  # stream: high-resolution wall clock + process id + per-session counter.
+  # The pid makes IDs unique across processes; the counter makes them unique
+  # within a process even when the clock resolution is coarse.
   timestamp <- as.numeric(Sys.time()) * 1e6
-  random_part <- paste(sample(c(letters, 0:9), 8, replace = TRUE), collapse = "")
-  hash <- sprintf("%s_%s", format(timestamp, scientific = FALSE), random_part)
+  counter <- (.unique_id_env$counter %% 999999999L) + 1L
+  .unique_id_env$counter <- counter
+  hash <- sprintf("%s_%d_%d",
+                  format(timestamp, scientific = FALSE),
+                  Sys.getpid(), counter)
 
   if (nchar(prefix) > 0) {
     paste0(prefix, "_", hash)
